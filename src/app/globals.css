@@ -1,0 +1,24 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Member colours on the calendar; index maps to profiles.color_index. */
+.member-0 { --member: #6366f1; }
+.member-1 { --member: #10b981; }
+.member-2 { --member: #f59e0b; }
+.member-3 { --member: #ef4444; }
+.member-4 { --member: #06b6d4; }
+.member-5 { --member: #8b5cf6; }
+.member-6 { --member: #ec4899; }
+.member-7 { --member: #14b8a6; }
+.member-8 { --member: #f97316; }
+.member-9 { --member: #3b82f6; }
+.member-10 { --member: #84cc16; }
+.member-11 { --member: #a855f7; }
