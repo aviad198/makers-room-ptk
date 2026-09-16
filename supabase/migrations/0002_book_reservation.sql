@@ -89,7 +89,13 @@ end;
 $$;
 
 -- The scheduling rules live in the application layer, and this function skips
--- row level security. Only the service role may call it.
+-- row level security. Only the service role may call it: revoking from PUBLIC
+-- also drops the default grant, so service_role must be granted back
+-- explicitly or every booking would fail with "permission denied".
 revoke all on function public.book_reservation(
   uuid, uuid, text, text, print_priority, timestamptz, timestamptz, text, uuid[]
 ) from public, anon, authenticated;
+
+grant execute on function public.book_reservation(
+  uuid, uuid, text, text, print_priority, timestamptz, timestamptz, text, uuid[]
+) to service_role;
