@@ -10,6 +10,7 @@ the machines stay busy and no single person can monopolise them.
 - **Auth:** Google OAuth via Supabase
 - **Tests:** Vitest — 67 unit tests covering the scheduling rules
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — forks and pull requests welcome
+- **Licence:** [MIT](LICENSE)
 
 ---
 
