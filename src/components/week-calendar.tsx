@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
   buildWeekDays,
   formatDayHeading,
   formatTime,
+  minutesSinceMidnight,
   segmentGeometry,
   splitIntoDaySegments,
   toDateKey,
@@ -59,6 +60,36 @@ export function WeekCalendar({
     [weekStartKey, policy.timeZone],
   );
 
+  // Drives the "now" marker and the currently-printing banner; ticks every
+  // 30s rather than every render so it doesn't need to be perfectly live.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const todayKey = toDateKey(now, policy.timeZone);
+  const todayIndex = weekDays.findIndex((day) => toDateKey(day, policy.timeZone) === todayKey);
+  const nowMinutes = minutesSinceMidnight(now, policy.timeZone);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const dayColumnRefs = useRef<Array<HTMLDivElement | null>>([]);
+
+  // On phones the week doesn't fit on screen, so open scrolled to today
+  // instead of forcing people to swipe past days that have already passed.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const column = todayIndex >= 0 ? dayColumnRefs.current[todayIndex] : null;
+    if (!column) {
+      container.scrollLeft = 0;
+      return;
+    }
+    const gutterWidth = 56; // matches the 3.5rem hour-label column
+    const offset = column.getBoundingClientRect().left - container.getBoundingClientRect().left;
+    container.scrollLeft = Math.max(container.scrollLeft + offset - gutterWidth, 0);
+  }, [todayIndex, weekStartKey]);
+
   const visible = useMemo(
     () =>
       reservations.filter(
@@ -90,6 +121,16 @@ export function WeekCalendar({
   );
 
   const mine = visible.filter((reservation) => reservation.userId === viewer.id).length;
+
+  const printingNow = useMemo(
+    () =>
+      visible.filter((reservation) => {
+        const start = new Date(reservation.startsAt).getTime();
+        const end = new Date(reservation.endsAt).getTime();
+        return now.getTime() >= start && now.getTime() < end;
+      }),
+    [visible, now],
+  );
 
   function openBookingAt(dayIndex: number, hour: number) {
     setDialogState({
@@ -163,14 +204,33 @@ export function WeekCalendar({
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      {printingNow.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <span className="relative flex h-2.5 w-2.5 shrink-0">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+          </span>
+          <span className="font-semibold">Printing now:</span>
+          {printingNow.map((reservation) => (
+            <span
+              key={reservation.id}
+              className="rounded-full bg-white px-2 py-0.5 ring-1 ring-rose-200"
+            >
+              {printerNames.get(reservation.printerId) ?? 'Printer'} · {reservation.ownerName}
+              {' — until '}
+              {formatTime(new Date(reservation.endsAt), policy.timeZone)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div ref={scrollRef} className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <div className="min-w-[46rem]">
           <div className="grid grid-cols-[3.5rem_repeat(7,1fr)] border-b border-slate-200">
-            <div />
+            <div className="sticky left-0 z-10 bg-white" />
             {weekDays.map((day) => {
               const heading = formatDayHeading(day, policy.timeZone);
-              const isToday =
-                toDateKey(day, policy.timeZone) === toDateKey(new Date(), policy.timeZone);
+              const isToday = toDateKey(day, policy.timeZone) === todayKey;
               return (
                 <div key={day.toISOString()} className="px-2 py-2 text-center">
                   <div className="text-[0.7rem] uppercase tracking-wide text-slate-400">
@@ -191,7 +251,7 @@ export function WeekCalendar({
           </div>
 
           <div className="grid grid-cols-[3.5rem_repeat(7,1fr)]">
-            <div className="relative" style={{ height: DAY_HEIGHT }}>
+            <div className="sticky left-0 z-10 bg-white" style={{ height: DAY_HEIGHT }}>
               {Array.from({ length: 24 }, (_, hour) => (
                 <div
                   key={hour}
@@ -201,15 +261,33 @@ export function WeekCalendar({
                   {hour === 0 ? '' : `${String(hour).padStart(2, '0')}:00`}
                 </div>
               ))}
+              {todayIndex >= 0 ? (
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-x-0 flex justify-end pr-1"
+                  style={{ top: `${(nowMinutes / (24 * 60)) * 100}%` }}
+                >
+                  <span className="-translate-y-1/2 rounded bg-rose-500 px-1 py-0.5 text-[0.6rem] font-semibold leading-none text-white shadow">
+                    {formatTime(now, policy.timeZone)}
+                  </span>
+                </div>
+              ) : null}
             </div>
 
             {weekDays.map((day, dayIndex) => (
               <div
                 key={day.toISOString()}
+                ref={(el) => {
+                  dayColumnRefs.current[dayIndex] = el;
+                }}
                 className="relative border-l border-slate-100"
                 style={{ height: DAY_HEIGHT }}
               >
                 <OvernightShading policy={policy} />
+
+                {dayIndex === todayIndex ? (
+                  <NowMarker topPercent={(nowMinutes / (24 * 60)) * 100} />
+                ) : null}
 
                 {Array.from({ length: 24 }, (_, hour) => (
                   <button
@@ -228,6 +306,10 @@ export function WeekCalendar({
                     const reservation = segment.item;
                     const geometry = segmentGeometry(segment);
                     const isMine = reservation.userId === viewer.id;
+                    const isLive =
+                      dayIndex === todayIndex &&
+                      now.getTime() >= new Date(reservation.startsAt).getTime() &&
+                      now.getTime() < new Date(reservation.endsAt).getTime();
                     return (
                       <button
                         key={`${reservation.id}-${segment.dayIndex}`}
@@ -235,13 +317,19 @@ export function WeekCalendar({
                         onClick={() => setSelected(reservation)}
                         className={`member-${reservation.colorIndex % 12} absolute inset-x-1 overflow-hidden rounded-md px-1.5 py-1 text-left text-white shadow-sm transition hover:brightness-95 ${
                           isMine ? 'ring-2 ring-slate-900 ring-offset-1' : ''
-                        }`}
+                        } ${isLive ? 'ring-2 ring-rose-400 ring-offset-1' : ''}`}
                         style={{
                           top: `${geometry.top}%`,
                           height: `max(${geometry.height}%, 1.25rem)`,
                           backgroundColor: 'var(--member)',
                         }}
                       >
+                        {isLive ? (
+                          <span className="absolute right-1 top-1 flex items-center gap-1 rounded-full bg-rose-600/90 px-1.5 py-0.5 text-[0.55rem] font-bold uppercase tracking-wide text-white">
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                            Now
+                          </span>
+                        ) : null}
                         <span className="block text-[0.6rem] font-semibold uppercase opacity-80">
                           {printerNames.get(reservation.printerId) ?? ''}
                           {reservation.priority === 'urgent' ? ' · urgent' : ''}
@@ -295,6 +383,20 @@ export function WeekCalendar({
         policy={policy}
         initial={dialogState}
       />
+    </div>
+  );
+}
+
+/** Red "now" line across today's column, Google-Calendar style. */
+function NowMarker({ topPercent }: { topPercent: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-x-0 z-20 flex items-center"
+      style={{ top: `${topPercent}%` }}
+    >
+      <span className="-ml-1 h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500" />
+      <span className="h-px flex-1 bg-rose-500" />
     </div>
   );
 }
