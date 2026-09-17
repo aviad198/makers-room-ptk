@@ -1,5 +1,12 @@
 import type { PrintPriority, ReservationStatus } from '@/lib/scheduling';
 
+export interface CalendarParticipant {
+  userId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+}
+
 /** Reservation shape passed from server components to the calendar. */
 export interface CalendarReservation {
   id: string;
@@ -16,6 +23,9 @@ export interface CalendarReservation {
   ownerEmail: string | null;
   ownerPhone: string | null;
   colorIndex: number;
+  /** Owner is happy for other members to join this session. */
+  allowsJoiners: boolean;
+  participants: CalendarParticipant[];
 }
 
 export interface CalendarPrinter {
@@ -31,8 +41,10 @@ export interface ViewerSummary {
   email: string;
   phone: string | null;
   role: 'member' | 'admin';
-  tier: 'new' | 'regular' | 'heavy';
-  tierExplanation: string;
+  /** Short badge text, e.g. "6h 30m of daytime budget left". */
+  monthlyBudgetLabel: string;
+  /** Full quota breakdown shown as a tooltip and on the summary pages. */
+  quotaExplanation: string;
 }
 
 export const PRIORITY_STYLES: Record<

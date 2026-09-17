@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveTier } from '../fairness';
 import { DEFAULT_POLICY } from '../policy';
 import { evaluateBooking } from '../rules';
 import { zonedWallTimeToDate } from '../time';
@@ -36,17 +35,12 @@ function makeProfile(overrides: Partial<MemberProfile> = {}): MemberProfile {
   };
 }
 
-/** Defaults land the member in the `regular` tier. */
+/** A member who has not spent any quota yet. */
 function makeUsage(overrides: Partial<UserUsage> = {}): UserUsage {
   return {
-    accountCreatedAt: at(-200, 12),
-    lifetimeReservations: 20,
-    windowReservations: 2,
-    windowMinutes: 300,
     activeReservations: 0,
-    weekMinutes: 0,
-    weekPrimeTimeReservations: 0,
-    urgentInWindow: 0,
+    workingWeekReservations: 0,
+    monthWorkingMinutes: 0,
     ...overrides,
   };
 }
@@ -128,7 +122,7 @@ describe('slot sanity', () => {
     expect(codes(result)).toContain('too_short');
   });
 
-  it('rejects times that are off the 15-minute grid', () => {
+  it('rejects times that are off the 5-minute grid', () => {
     const result = evaluate({ startsAt: at(4, 10, 7), endsAt: at(4, 13) });
     expect(codes(result)).toContain('misaligned');
   });
@@ -147,37 +141,40 @@ describe('print length and the overnight rule', () => {
     expect(result.classification.isLongPrint).toBe(false);
   });
 
-  it('pushes a long daytime print to the overnight window', () => {
-    // 6h during the day exceeds the 4h daytime cap.
+  it('suggests the overnight window for a long daytime print', () => {
+    // 6h during the day: allowed, but nudged towards the night.
     const result = evaluate({ startsAt: at(4, 10), endsAt: at(4, 16) });
-    expect(codes(result)).toContain('long_print_must_be_overnight');
+    expect(result.allowed).toBe(true);
+    expect(result.warnings.map((w) => w.code)).toContain('consider_overnight');
   });
 
-  it('allows the same long print overnight', () => {
+  it('allows the same long print overnight without the suggestion', () => {
     // 20:00 -> 06:00 is a 10h job fully inside the overnight window.
     const result = evaluate({ startsAt: at(4, 20), endsAt: at(5, 6) });
     expect(result.violations).toEqual([]);
     expect(result.classification.isOvernight).toBe(true);
     expect(result.classification.isLongPrint).toBe(true);
+    expect(result.warnings.map((w) => w.code)).not.toContain('consider_overnight');
+    expect(result.warnings.map((w) => w.code)).toContain('overnight_unattended');
   });
 
-  it('caps overnight prints at the maximum duration', () => {
-    // 18:00 -> 09:00 is 15h, beyond the 14h overnight cap.
+  it('puts no ceiling on how long a print may run', () => {
+    // 18:00 -> 09:00 is 15h: fine, nothing caps the length any more.
     const result = evaluate({ startsAt: at(4, 18), endsAt: at(5, 9) });
-    expect(codes(result)).toContain('over_max_overnight');
+    expect(result.allowed).toBe(true);
   });
 
-  it('rejects a long print that merely clips the overnight window', () => {
+  it('suggests the night for a long print that merely clips the window', () => {
     // 07:00 -> 21:00 is 14h but only ~21% overnight.
     const result = evaluate({ startsAt: at(4, 7), endsAt: at(4, 21) });
-    expect(codes(result)).toContain('long_print_must_be_overnight');
     expect(result.classification.isOvernight).toBe(false);
+    expect(result.warnings.map((w) => w.code)).toContain('consider_overnight');
   });
 
-  it('nudges short prints out of the overnight window with a warning', () => {
+  it('leaves short overnight prints alone', () => {
     const result = evaluate({ startsAt: at(4, 20), endsAt: at(4, 21) });
     expect(result.allowed).toBe(true);
-    expect(result.warnings.map((w) => w.code)).toContain('short_overnight');
+    expect(result.warnings.map((w) => w.code)).not.toContain('consider_overnight');
   });
 });
 
@@ -233,11 +230,13 @@ describe('urgent jobs and pre-emption', () => {
     expect(codes(result)).toContain('urgent_needs_justification');
   });
 
-  it('enforces the urgent quota', () => {
+  it('never limits how many urgent prints you may book', () => {
     const result = evaluate(urgent, {
-      usage: makeUsage({ urgentInWindow: DEFAULT_POLICY.maxUrgentPerWindow }),
+      printerReservations: [
+        makeReservation({ id: 'earlier', startsAt: at(4, 2), endsAt: at(4, 5) }),
+      ],
     });
-    expect(codes(result)).toContain('urgent_quota');
+    expect(result.allowed).toBe(true);
   });
 
   it('ignores cancelled and already-preempted reservations', () => {
@@ -281,78 +280,146 @@ describe('printer isolation', () => {
   });
 });
 
-describe('fairness tiers', () => {
-  it('classifies a brand-new account as new', () => {
-    const usage = makeUsage({ accountCreatedAt: at(1, 9), lifetimeReservations: 0 });
-    expect(resolveTier(usage, DEFAULT_POLICY, NOW)).toBe('new');
-  });
-
-  it('classifies a high-volume account as heavy', () => {
-    const usage = makeUsage({ windowMinutes: 31 * 60 });
-    expect(resolveTier(usage, DEFAULT_POLICY, NOW)).toBe('heavy');
-  });
-
-  it('classifies a frequent-but-short account as heavy by count', () => {
-    const usage = makeUsage({ windowReservations: 12 });
-    expect(resolveTier(usage, DEFAULT_POLICY, NOW)).toBe('heavy');
-  });
-
-  it('keeps a new member out of the heavy bucket', () => {
-    const usage = makeUsage({
-      accountCreatedAt: at(1, 9),
-      lifetimeReservations: 1,
-      windowMinutes: 40 * 60,
-    });
-    expect(resolveTier(usage, DEFAULT_POLICY, NOW)).toBe('new');
-  });
-});
-
-describe('booking horizon keeps slots open for lighter users', () => {
-  const heavyUsage = makeUsage({ windowMinutes: 31 * 60 });
-
-  it('stops a heavy user from booking far into the future', () => {
-    // 12 days out, beyond the 5-day heavy horizon.
+describe('cleaning gap between prints', () => {
+  it('rejects a booking that starts the moment another ends', () => {
     const result = evaluate(
-      { startsAt: at(14, 10), endsAt: at(14, 13) },
-      { usage: heavyUsage },
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 7), endsAt: at(4, 10), title: 'Earlier' }),
+        ],
+      },
     );
-    expect(result.tier).toBe('heavy');
-    expect(codes(result)).toContain('beyond_horizon');
+    expect(codes(result)).toContain('buffer_gap');
   });
 
-  it('lets a regular user book that same slot', () => {
-    const result = evaluate({ startsAt: at(14, 10), endsAt: at(14, 13) });
-    expect(result.tier).toBe('regular');
+  it('allows a booking that starts exactly one gap later', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 7), endsAt: at(4, 9, 55) }),
+        ],
+      },
+    );
+    expect(codes(result)).not.toContain('buffer_gap');
     expect(result.allowed).toBe(true);
   });
 
-  it('gives new members the longest horizon', () => {
-    // 20 days out: inside the 21-day new-member horizon, outside the 14-day one.
-    const newUsage = makeUsage({ accountCreatedAt: at(1, 9), lifetimeReservations: 0 });
-    const newMember = evaluate({ startsAt: at(22, 10), endsAt: at(22, 13) }, { usage: newUsage });
-    expect(newMember.tier).toBe('new');
-    expect(newMember.allowed).toBe(true);
-
-    const regular = evaluate({ startsAt: at(22, 10), endsAt: at(22, 13) });
-    expect(codes(regular)).toContain('beyond_horizon');
+  it('rejects a booking that ends too close to the next print', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 13, 3), endsAt: at(4, 16), title: 'Later' }),
+        ],
+      },
+    );
+    expect(codes(result)).toContain('buffer_gap');
   });
 
-  it('opens any free slot to a heavy user inside the 24h window', () => {
-    // Same heavy user, but the slot starts in ~9h.
+  it('allows a booking that ends exactly one gap before the next print', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 13, 5), endsAt: at(4, 16) }),
+        ],
+      },
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it('applies the gap to your own back-to-back prints', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ userId: 'user-1', startsAt: at(4, 7), endsAt: at(4, 10) }),
+        ],
+      },
+    );
+    expect(codes(result)).toContain('buffer_gap');
+  });
+
+  it('needs no gap from a print on the other machine', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ printerId: PRINTER_B, startsAt: at(4, 7), endsAt: at(4, 10) }),
+        ],
+      },
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it('needs no gap from a cancelled print', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 7), endsAt: at(4, 10), status: 'cancelled' }),
+        ],
+      },
+    );
+    expect(result.allowed).toBe(true);
+  });
+
+  it('does not double-report a gap for a slot that is simply taken', () => {
+    const result = evaluate(
+      {},
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 11), endsAt: at(4, 12), priority: 'standard' }),
+        ],
+      },
+    );
+    expect(codes(result)).toContain('slot_taken');
+    expect(codes(result)).not.toContain('buffer_gap');
+  });
+
+  it('asks for no gap from the print it is bumping', () => {
+    const result = evaluate(
+      { priority: 'urgent', justification: 'Demo tomorrow' },
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(4, 10), endsAt: at(4, 13), priority: 'fun' }),
+        ],
+      },
+    );
+    expect(codes(result)).not.toContain('buffer_gap');
+    expect(result.preemptions).toHaveLength(1);
+    expect(result.allowed).toBe(true);
+  });
+});
+
+describe('the open 24h window', () => {
+  it('lets anyone take a free slot inside the window', () => {
     const result = evaluate(
       { startsAt: at(2, 19), endsAt: at(2, 22) },
-      { usage: heavyUsage },
+      {
+        usage: makeUsage({
+          workingWeekReservations: 5,
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap,
+          activeReservations: 9,
+        }),
+      },
     );
     expect(result.classification.isOpenBooking).toBe(true);
     expect(result.allowed).toBe(true);
     expect(result.warnings.map((w) => w.code)).toContain('open_booking');
   });
 
+  it('books any date in the future without a horizon limit', () => {
+    const result = evaluate({ startsAt: at(120, 10), endsAt: at(120, 13) });
+    expect(result.allowed).toBe(true);
+  });
+
   it('still refuses a taken slot inside the 24h window', () => {
     const result = evaluate(
       { startsAt: at(2, 19), endsAt: at(2, 22) },
       {
-        usage: heavyUsage,
         printerReservations: [
           makeReservation({ startsAt: at(2, 19), endsAt: at(2, 22), priority: 'standard' }),
         ],
@@ -361,71 +428,146 @@ describe('booking horizon keeps slots open for lighter users', () => {
     expect(codes(result)).toContain('slot_taken');
   });
 
-  it('still enforces the overnight rule inside the 24h window', () => {
-    const result = evaluate({ startsAt: at(2, 12), endsAt: at(2, 20) });
-    expect(codes(result)).toContain('long_print_must_be_overnight');
+  it('still enforces the cleaning gap inside the 24h window', () => {
+    const result = evaluate(
+      { startsAt: at(2, 19), endsAt: at(2, 22) },
+      {
+        printerReservations: [
+          makeReservation({ startsAt: at(2, 15), endsAt: at(2, 19) }),
+        ],
+      },
+    );
+    expect(codes(result)).toContain('buffer_gap');
   });
 });
 
 describe('volume quotas', () => {
-  it('enforces the rolling weekly minutes cap', () => {
-    const result = evaluate(
-      {},
-      { usage: makeUsage({ weekMinutes: DEFAULT_POLICY.tiers.regular.weeklyMinutesCap - 60 }) },
-    );
-    expect(codes(result)).toContain('weekly_cap');
-  });
-
   it('limits how many upcoming prints a member may hold', () => {
     const result = evaluate(
       {},
       {
         usage: makeUsage({
-          activeReservations: DEFAULT_POLICY.tiers.regular.maxActiveReservations,
+          activeReservations: DEFAULT_POLICY.maxActiveReservations,
         }),
       },
     );
     expect(codes(result)).toContain('too_many_active');
   });
 
-  it('limits daytime bookings per week', () => {
+  it('allows a member who is one under the open-booking cap', () => {
     const result = evaluate(
       {},
       {
         usage: makeUsage({
-          weekPrimeTimeReservations:
-            DEFAULT_POLICY.tiers.regular.primeTimeReservationsPerWeek,
+          activeReservations: DEFAULT_POLICY.maxActiveReservations - 1,
         }),
       },
     );
-    expect(codes(result)).toContain('prime_time_cap');
+    expect(codes(result)).not.toContain('too_many_active');
+    expect(result.allowed).toBe(true);
+  });
+});
+
+/**
+ * March 2026 starts on a Sunday, so day 4 is a Wednesday (working day) and
+ * day 6 is a Friday (weekend).
+ */
+describe('working-week and monthly budgets', () => {
+  it('allows the first daytime print of the working week', () => {
+    const result = evaluate({}, { usage: makeUsage({ workingWeekReservations: 0 }) });
+    expect(codes(result)).not.toContain('working_week_print_cap');
+    expect(result.allowed).toBe(true);
   });
 
-  it('does not apply the daytime cap to an overnight booking', () => {
+  it('rejects a second daytime print in the same working week', () => {
+    const result = evaluate({}, { usage: makeUsage({ workingWeekReservations: 1 }) });
+    expect(codes(result)).toContain('working_week_print_cap');
+  });
+
+  it('does not count a night print against the working-week limit', () => {
+    const result = evaluate(
+      { startsAt: at(4, 20), endsAt: at(5, 6) },
+      { usage: makeUsage({ workingWeekReservations: 1 }) },
+    );
+    expect(result.classification.isWorkingDaytime).toBe(false);
+    expect(codes(result)).not.toContain('working_week_print_cap');
+    expect(result.allowed).toBe(true);
+  });
+
+  it('does not count a weekend print against the working-week limit', () => {
+    const result = evaluate(
+      { startsAt: at(6, 10), endsAt: at(6, 13) },
+      { usage: makeUsage({ workingWeekReservations: 1 }) },
+    );
+    expect(result.classification.isWorkingDaytime).toBe(false);
+    expect(codes(result)).not.toContain('working_week_print_cap');
+    expect(result.allowed).toBe(true);
+  });
+
+  it('enforces the monthly working-hours cap', () => {
+    const result = evaluate(
+      {},
+      {
+        usage: makeUsage({
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap - 60,
+        }),
+      },
+    );
+    expect(codes(result)).toContain('monthly_cap');
+  });
+
+  it('allows a daytime print that exactly fills the monthly budget', () => {
+    const result = evaluate(
+      {},
+      {
+        usage: makeUsage({
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap - 180,
+        }),
+      },
+    );
+    expect(codes(result)).not.toContain('monthly_cap');
+    expect(result.allowed).toBe(true);
+  });
+
+  it('charges only the daytime part of a print to the monthly budget', () => {
+    const result = evaluate(
+      // 15:00 -> 08:00 next day: only 15:00-17:00 is working-hours time.
+      { startsAt: at(4, 15), endsAt: at(5, 8) },
+      {
+        usage: makeUsage({
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap - 180,
+        }),
+      },
+    );
+    expect(result.classification.workingDaytimeMinutes).toBe(120);
+    expect(codes(result)).not.toContain('monthly_cap');
+  });
+
+  it('ignores a fully overnight print for the monthly budget', () => {
     const result = evaluate(
       { startsAt: at(4, 20), endsAt: at(5, 6) },
       {
         usage: makeUsage({
-          weekPrimeTimeReservations:
-            DEFAULT_POLICY.tiers.regular.primeTimeReservationsPerWeek,
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap,
         }),
       },
     );
-    expect(codes(result)).not.toContain('prime_time_cap');
+    expect(result.classification.workingDaytimeMinutes).toBe(0);
+    expect(codes(result)).not.toContain('monthly_cap');
     expect(result.allowed).toBe(true);
   });
 
-  it('waives volume quotas inside the open window', () => {
+  it('waives both budgets inside the open window', () => {
     const result = evaluate(
-      { startsAt: at(2, 19), endsAt: at(2, 22) },
+      { startsAt: at(3, 9), endsAt: at(3, 12) },
       {
         usage: makeUsage({
-          weekMinutes: DEFAULT_POLICY.tiers.regular.weeklyMinutesCap,
-          activeReservations: 9,
-          weekPrimeTimeReservations: 9,
+          workingWeekReservations: 5,
+          monthWorkingMinutes: DEFAULT_POLICY.monthlyWorkingMinutesCap,
         }),
       },
     );
+    expect(result.classification.isOpenBooking).toBe(true);
     expect(result.allowed).toBe(true);
   });
 });

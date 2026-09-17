@@ -1,11 +1,15 @@
-import { limitsForTier, resolveTier } from './fairness';
 import {
+  addMinutes,
   durationMinutes,
+  getZonedParts,
   hoursBetween,
   intervalsOverlap,
   isAlignedToGranularity,
   overnightMinutes,
   startsInPrimeTime,
+  startsInWorkingDaytime,
+  workingDaytimeMinutes,
+  type Interval,
 } from './time';
 import type {
   BookingContext,
@@ -35,6 +39,27 @@ export function formatMinutes(total: number): string {
   if (hours === 0) return `${minutes}m`;
   if (minutes === 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
+}
+
+/** Local `HH:MM` for a rule message. */
+function formatClock(date: Date, timeZone: string): string {
+  const { hour, minute } = getZonedParts(date, timeZone);
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/**
+ * True when `interval` sits closer than `bufferMinutes` to `neighbour`,
+ * measured from whichever edges face each other.
+ */
+function isWithinBuffer(
+  interval: Interval,
+  neighbour: { startsAt: Date; endsAt: Date },
+  bufferMinutes: number,
+): boolean {
+  return intervalsOverlap(
+    { start: interval.start, end: addMinutes(interval.end, bufferMinutes) },
+    { start: neighbour.startsAt, end: addMinutes(neighbour.endsAt, bufferMinutes) },
+  );
 }
 
 /**
@@ -67,6 +92,23 @@ export function classifySlot(
       policy.primeTimeEndHour,
       policy.timeZone,
     ),
+    workingDaytimeMinutes:
+      total > 0
+        ? workingDaytimeMinutes(
+            interval,
+            policy.primeTimeStartHour,
+            policy.primeTimeEndHour,
+            policy.workingDays,
+            policy.timeZone,
+          )
+        : 0,
+    isWorkingDaytime: startsInWorkingDaytime(
+      request.startsAt,
+      policy.primeTimeStartHour,
+      policy.primeTimeEndHour,
+      policy.workingDays,
+      policy.timeZone,
+    ),
     leadTimeHours,
     isOpenBooking: leadTimeHours <= policy.openBookingHours,
   };
@@ -86,8 +128,6 @@ export function evaluateBooking(
   const violations: RuleViolation[] = [];
   const warnings: RuleViolation[] = [];
 
-  const tier = resolveTier(usage, policy, now);
-  const limits = limitsForTier(tier, policy);
   const classification = classifySlot(request, policy, now);
   const { durationMinutes: minutes, isOpenBooking } = classification;
 
@@ -139,54 +179,31 @@ export function evaluateBooking(
     violations.push(error('in_the_past', 'Pick a slot that starts in the future.'));
   }
 
-  // --- Print length and the overnight rule --------------------------------
-  if (minutes > 0) {
+  // --- Print length -------------------------------------------------------
+  // There is no cap on how long a print may be: a long job is simply nudged
+  // towards the night, where it also costs nothing from the daytime quotas.
+  if (minutes > 0 && classification.isLongPrint) {
     if (classification.isOvernight) {
-      if (minutes > policy.maxOvernightMinutes) {
-        violations.push(
-          error(
-            'over_max_overnight',
-            `Overnight prints are capped at ${formatMinutes(policy.maxOvernightMinutes)}.`,
-          ),
-        );
-      }
-    } else if (minutes > policy.maxDaytimeMinutes) {
-      // Long prints belong overnight so the printers stay free during the day.
-      violations.push(
-        error(
-          'long_print_must_be_overnight',
-          `Prints longer than ${formatMinutes(policy.maxDaytimeMinutes)} must run overnight (at least ${Math.round(
-            policy.overnightCoverageRatio * 100,
-          )}% between ${policy.overnightStartHour}:00 and ${policy.overnightEndHour}:00). This slot is only ${Math.round(
-            classification.overnightRatio * 100,
-          )}% overnight.`,
-        ),
-      );
-    }
-
-    if (
-      classification.isLongPrint &&
-      classification.isOvernight &&
-      minutes <= policy.maxOvernightMinutes
-    ) {
       warnings.push(
         warn(
           'overnight_unattended',
           'Long overnight print: make sure the bed is clear and filament is loaded before you leave.',
         ),
       );
-    }
-    if (!classification.isLongPrint && classification.isOvernight) {
+    } else {
       warnings.push(
         warn(
-          'short_overnight',
-          'This is a short print in the overnight window. Consider a daytime slot and leave the night free for long jobs.',
+          'consider_overnight',
+          `This print runs for ${formatMinutes(
+            minutes,
+          )}. Prints over ${formatMinutes(policy.longPrintThresholdMinutes)} are best started in the overnight window (${policy.overnightStartHour}:00–${policy.overnightEndHour}:00): the machine is free anyway, and night hours do not use your daytime quota, so your working-week print stays available.`,
         ),
       );
     }
   }
 
-  // --- Urgent guard rails -------------------------------------------------
+  // --- Urgent work --------------------------------------------------------
+  // Urgent is unlimited; it only has to say why, so the bumped owner knows.
   if (request.priority === 'urgent') {
     if (policy.urgentRequiresJustification && !request.justification?.trim()) {
       violations.push(
@@ -196,17 +213,9 @@ export function evaluateBooking(
         ),
       );
     }
-    if (usage.urgentInWindow >= policy.maxUrgentPerWindow) {
-      violations.push(
-        error(
-          'urgent_quota',
-          `You have used all ${policy.maxUrgentPerWindow} urgent bookings in the last ${policy.usageWindowDays} days.`,
-        ),
-      );
-    }
   }
 
-  // --- Fairness limits ----------------------------------------------------
+  // --- Quota limits -------------------------------------------------------
   // Inside the open window every free slot is fair game, so these are skipped.
   if (isOpenBooking) {
     warnings.push(
@@ -216,46 +225,42 @@ export function evaluateBooking(
       ),
     );
   } else {
-    const horizonDays = classification.leadTimeHours / 24;
-    if (horizonDays > limits.bookingHorizonDays) {
-      violations.push(
-        error(
-          'beyond_horizon',
-          `As a ${tier} user you can book up to ${limits.bookingHorizonDays} days ahead. This slot is ${Math.floor(
-            horizonDays,
-          )} days out. It opens to you on ${describeHorizonOpening(request.startsAt, limits.bookingHorizonDays)}, or within ${policy.openBookingHours}h of the start if nobody takes it.`,
-        ),
-      );
-    }
-
-    if (minutes > 0 && usage.weekMinutes + minutes > limits.weeklyMinutesCap) {
-      violations.push(
-        error(
-          'weekly_cap',
-          `This would put you at ${formatMinutes(
-            usage.weekMinutes + minutes,
-          )} in a 7-day span; your ${tier} limit is ${formatMinutes(limits.weeklyMinutesCap)}.`,
-        ),
-      );
-    }
-
-    if (usage.activeReservations >= limits.maxActiveReservations) {
+    if (usage.activeReservations >= policy.maxActiveReservations) {
       violations.push(
         error(
           'too_many_active',
-          `You already hold ${usage.activeReservations} upcoming prints; your ${tier} limit is ${limits.maxActiveReservations}.`,
+          `You already hold ${usage.activeReservations} upcoming prints; the limit is ${policy.maxActiveReservations}.`,
         ),
       );
     }
 
+    // Working-week and monthly budgets only charge for daytime Sun-Thu use:
+    // nights and weekends stay free so the machines keep running.
     if (
-      classification.isPrimeTime &&
-      usage.weekPrimeTimeReservations >= limits.primeTimeReservationsPerWeek
+      classification.isWorkingDaytime &&
+      usage.workingWeekReservations >= policy.maxPrintsPerWorkingWeek
     ) {
       violations.push(
         error(
-          'prime_time_cap',
-          `You have reached your ${limits.primeTimeReservationsPerWeek} daytime bookings for this week. Try an overnight slot.`,
+          'working_week_print_cap',
+          `Daytime prints are limited to ${policy.maxPrintsPerWorkingWeek} per working week (Sun–Thu) and you already have ${usage.workingWeekReservations} this week. Nights and weekends do not count — book one of those instead.`,
+        ),
+      );
+    }
+
+    const monthMinutes = classification.workingDaytimeMinutes;
+    if (
+      monthMinutes > 0 &&
+      usage.monthWorkingMinutes + monthMinutes > policy.monthlyWorkingMinutesCap
+    ) {
+      violations.push(
+        error(
+          'monthly_cap',
+          `This would put you at ${formatMinutes(
+            usage.monthWorkingMinutes + monthMinutes,
+          )} of working-hours printing this month; the limit is ${formatMinutes(
+            policy.monthlyWorkingMinutesCap,
+          )}. Nights and weekends do not count towards it.`,
         ),
       );
     }
@@ -265,15 +270,18 @@ export function evaluateBooking(
   const preemptions: ExistingReservation[] = [];
   const requested = { start: request.startsAt, end: request.endsAt };
 
-  const conflicts = context.printerReservations.filter(
+  const neighbours = context.printerReservations.filter(
     (reservation) =>
       reservation.printerId === request.printerId &&
       reservation.id !== request.reservationId &&
-      BLOCKING_STATUSES.has(reservation.status) &&
-      intervalsOverlap(requested, {
-        start: reservation.startsAt,
-        end: reservation.endsAt,
-      }),
+      BLOCKING_STATUSES.has(reservation.status),
+  );
+
+  const conflicts = neighbours.filter((reservation) =>
+    intervalsOverlap(requested, {
+      start: reservation.startsAt,
+      end: reservation.endsAt,
+    }),
   );
 
   const canPreempt = policy.preemptibleBy[request.priority] ?? [];
@@ -325,17 +333,41 @@ export function evaluateBooking(
     );
   }
 
+  // --- Cleaning gap between prints ---------------------------------------
+  // Bookings that merely sit too close (rather than overlapping) get their own
+  // message: the fix is to shift by a few minutes, not to pick another day.
+  // Overlapping rows are skipped — they already reported slot_taken, or are
+  // being bumped and so free the machine entirely.
+  if (policy.bufferMinutes > 0 && minutes > 0) {
+    const overlapping = new Set(conflicts.map((conflict) => conflict.id));
+
+    for (const neighbour of neighbours) {
+      if (overlapping.has(neighbour.id)) continue;
+      if (!isWithinBuffer(requested, neighbour, policy.bufferMinutes)) continue;
+
+      const isBefore = neighbour.endsAt.getTime() <= request.startsAt.getTime();
+      violations.push(
+        error(
+          'buffer_gap',
+          isBefore
+            ? `Leave ${policy.bufferMinutes} minutes to clear the bed after "${neighbour.title}". Start at ${formatClock(
+                addMinutes(neighbour.endsAt, policy.bufferMinutes),
+                policy.timeZone,
+              )} or later.`
+            : `Leave ${policy.bufferMinutes} minutes before "${neighbour.title}" starts. End by ${formatClock(
+                addMinutes(neighbour.startsAt, -policy.bufferMinutes),
+                policy.timeZone,
+              )} or pick another slot.`,
+        ),
+      );
+    }
+  }
+
   return {
     allowed: violations.length === 0,
-    tier,
     classification,
     violations,
     warnings,
     preemptions,
   };
-}
-
-function describeHorizonOpening(startsAt: Date, horizonDays: number): string {
-  const opensAt = new Date(startsAt.getTime() - horizonDays * 24 * 60 * 60 * 1000);
-  return opensAt.toISOString().slice(0, 10);
 }

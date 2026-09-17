@@ -30,9 +30,9 @@ export default async function MyPrintsPage() {
 
   const supabase = await createClient();
   const policy = await loadPolicy(supabase);
-  const history = usageHistoryRange(policy);
+  const history = usageHistoryRange();
 
-  const [printers, { data: rows }] = await Promise.all([
+  const [printers, { data: rows }, { data: joinedRows }] = await Promise.all([
     loadPrinters(supabase),
     supabase
       .from('reservations')
@@ -40,6 +40,12 @@ export default async function MyPrintsPage() {
       .eq('user_id', session.userId)
       .gte('starts_at', history.from.toISOString())
       .order('starts_at', { ascending: false }),
+    supabase
+      .from('reservation_participants')
+      .select(
+        'reservation:reservations(id, title, priority, status, starts_at, ends_at, printer_id, profile:profiles!reservations_user_id_fkey(full_name, email))',
+      )
+      .eq('user_id', session.userId),
   ]);
 
   const reservations = rows ?? [];
@@ -54,13 +60,21 @@ export default async function MyPrintsPage() {
     (row) => new Date(row.ends_at).getTime() < now || row.status !== 'scheduled',
   );
 
+  const joined = (joinedRows ?? [])
+    .map((entry) => entry.reservation)
+    .filter(
+      (reservation): reservation is NonNullable<typeof reservation> =>
+        Boolean(reservation) && new Date(reservation!.ends_at).getTime() >= now,
+    )
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+
   return (
     <div className="min-h-dvh">
       <AppHeader viewer={viewer} active="my-prints" />
 
       <main className="mx-auto max-w-4xl px-4 py-6">
         <h1 className="text-xl font-semibold text-slate-900">My prints</h1>
-        <p className="mt-1 text-sm text-slate-500">{viewer.tierExplanation}</p>
+        <p className="mt-1 text-sm text-slate-500">{viewer.quotaExplanation}</p>
 
         <Section title={`Upcoming (${upcoming.length})`}>
           {upcoming.length === 0 ? (
@@ -72,6 +86,27 @@ export default async function MyPrintsPage() {
                 row={row}
                 printerName={printerNames.get(row.printer_id) ?? ''}
                 timeZone={policy.timeZone}
+              />
+            ))
+          )}
+        </Section>
+
+        <Section title={`Joined sessions (${joined.length})`}>
+          {joined.length === 0 ? (
+            <Empty>
+              You have not joined anyone else&apos;s print. Sessions marked 👥 on the
+              schedule are open to join, and they cost you no quota.
+            </Empty>
+          ) : (
+            joined.map((reservation) => (
+              <ReservationCard
+                key={reservation.id}
+                row={reservation}
+                printerName={printerNames.get(reservation.printer_id) ?? ''}
+                timeZone={policy.timeZone}
+                hostName={
+                  reservation.profile?.full_name || reservation.profile?.email || 'Member'
+                }
               />
             ))
           )}
@@ -119,6 +154,7 @@ function ReservationCard({
   row,
   printerName,
   timeZone,
+  hostName,
 }: {
   row: {
     id: string;
@@ -127,10 +163,12 @@ function ReservationCard({
     status: string;
     starts_at: string;
     ends_at: string;
-    notes: string | null;
+    notes?: string | null;
   };
   printerName: string;
   timeZone: string;
+  /** Set when the card shows someone else's session that you joined. */
+  hostName?: string;
 }) {
   const start = new Date(row.starts_at);
   const end = new Date(row.ends_at);
@@ -152,8 +190,14 @@ function ReservationCard({
         <p className="mt-0.5 text-sm text-slate-500">
           {day} · {formatTime(start, timeZone)}–{formatTime(end, timeZone)} ·{' '}
           {formatMinutes(minutes)} · {printerName}
+          {hostName ? ` · hosted by ${hostName}` : ''}
         </p>
       </div>
+      {hostName ? (
+        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">
+          👥 Joined
+        </span>
+      ) : null}
       <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${priority.badge}`}>
         {priority.label}
       </span>

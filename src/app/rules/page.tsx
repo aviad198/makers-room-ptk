@@ -4,11 +4,15 @@ import { DEFAULT_POLICY } from '@/lib/scheduling';
 
 export const metadata = { title: 'כללי ההזמנות · MakersRoom PTK' };
 
-const TIER_LABELS_HE: Record<string, string> = {
-  new: 'חבר חדש',
-  regular: 'משתמש רגיל',
-  heavy: 'משתמש כבד',
-};
+const DAY_NAMES_HE = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+
+/** "ראשון–חמישי" for a contiguous run of working days. */
+function workingDaysLabel(days: number[]): string {
+  if (days.length === 0) return '';
+  const first = DAY_NAMES_HE[days[0]];
+  const last = DAY_NAMES_HE[days[days.length - 1]];
+  return first === last ? first : `${first}–${last}`;
+}
 
 /** Hebrew-friendly duration text, e.g. "שעתיים ו-30 דקות". */
 function formatMinutesHe(total: number): string {
@@ -30,6 +34,7 @@ function formatMinutesHe(total: number): string {
  */
 export default function RulesPage() {
   const policy = DEFAULT_POLICY;
+  const workingDays = workingDaysLabel(policy.workingDays);
 
   return (
     <main dir="rtl" lang="he" className="mx-auto max-w-3xl px-4 py-12">
@@ -40,26 +45,72 @@ export default function RulesPage() {
       <h1 className="mt-6 text-2xl font-semibold text-slate-900">איך התור עובד</h1>
       <p className="mt-2 text-slate-600">
         שתי מדפסות, סדנה משותפת אחת. הכללים האלה שומרים על המכונות עסוקות, מונעים
-        ממעט משתמשים כבדים לתפוס כל משבצת, ומוודאים שעבודה דחופה עדיין יכולה לעבור.
+        ממישהו אחד לתפוס את כל שעות היום, ומוודאים שעבודה דחופה עדיין יכולה לעבור.
       </p>
 
-      <Rule title="מגבלות אורך הדפסה">
+      <Rule title="אין הגבלת אורך על הדפסה">
         <p>
-          הדפסת יום יכולה לרוץ עד {formatMinutesHe(policy.maxDaytimeMinutes)}. בלילה
-          התקרה עולה ל־{formatMinutesHe(policy.maxOvernightMinutes)}, כי המכונה לא חוסמת
-          אף אחד בזמן שאתם ישנים.
+          הדפסה יכולה לרוץ כמה זמן שצריך — אין תקרה ליום ואין תקרה ללילה. מה שקובע הוא
+          המכסה בשעות העבודה, לא אורך ההדפסה עצמו.
         </p>
       </Rule>
 
-      <Rule title="הדפסות ארוכות עוברות ללילה">
+      <Rule title="המלצה: הדפסות ארוכות ללילה">
         <p>
-          כל הדפסה ארוכה מ־{formatMinutesHe(policy.longPrintThresholdMinutes)} חייבת
-          להתקיים ברובה בתוך חלון הלילה (
+          להדפסה ארוכה מ־{formatMinutesHe(policy.longPrintThresholdMinutes)} נציע (ולא
+          נחסום) להתחיל בחלון הלילה (
           <span dir="ltr">
             {policy.overnightStartHour}:00–{policy.overnightEndHour}:00
           </span>
-          ) — לפחות {Math.round(policy.overnightCoverageRatio * 100)}% מזמן הריצה. כך
-          שעות היום נשארות פנויות לאיטרציות קצרות.
+          ). זה כדאי גם לכם: שעות הלילה לא נספרות במכסת שעות העבודה החודשית ולא במכסת
+          הדפסת היום השבועית, כך שההדפסה הארוכה רצה בלילה והמכסה היומית שלכם נשארת
+          פנויה להדפסות נוספות.
+        </p>
+      </Rule>
+
+      <Rule title={`${policy.bufferMinutes} דקות ניקיון בין הדפסות`}>
+        <p>
+          בין שתי הדפסות על אותה מדפסת חייבות לעבור לפחות {policy.bufferMinutes} דקות,
+          כדי לפנות את המשטח ולהכין את ההדפסה הבאה. אם מישהו מזמין עד{' '}
+          <span dir="ltr">12:00</span>, ההזמנה הבאה יכולה להתחיל מ־
+          <span dir="ltr">12:05</span>. אפשר לבחור שעות בקפיצות של{' '}
+          {policy.slotGranularityMinutes} דקות.
+        </p>
+      </Rule>
+
+      <Rule title="הצטרפו אליי — הדפסה משותפת">
+        <p>
+          בכל הזמנה אפשר לסמן <strong>&quot;שאחרים יוכלו להצטרף&quot;</strong>. חברים
+          אחרים יראו את המשבצת מסומנת ב־👥 ויוכלו להצטרף אליה בלחיצה, להניח את החלקים
+          שלהם על אותו משטח ולחסוך הדפסה נפרדת.
+        </p>
+        <p className="mt-2">
+          הצטרפות <strong>לא נחשבת</strong> בזמן ההדפסה של המצטרף: היא לא נספרת במכסת
+          הדפסות היום השבועית, לא במכסה החודשית ולא במספר ההזמנות הפתוחות. רק בעל
+          המשבצת משלם עליה מהמכסה שלו.
+        </p>
+      </Rule>
+
+      <Rule title="מכסת הדפסות היום בשבוע עבודה">
+        <p>
+          בשבוע עבודה ({workingDays}) אפשר להחזיק עד{' '}
+          {policy.maxPrintsPerWorkingWeek === 1
+            ? 'הדפסת יום אחת'
+            : `${policy.maxPrintsPerWorkingWeek} הדפסות יום`}
+          . הדפסות שמתחילות בלילה או בסוף השבוע לא נספרות בכלל — שם הקיבולת פנויה,
+          וכדאי לנצל אותה.
+        </p>
+      </Rule>
+
+      <Rule title="מכסה חודשית בשעות העבודה">
+        <p>
+          בכל חודש קלנדרי אפשר לצבור עד{' '}
+          {formatMinutesHe(policy.monthlyWorkingMinutesCap)} של הדפסה בשעות העבודה (
+          <span dir="ltr">
+            {policy.primeTimeStartHour}:00–{policy.primeTimeEndHour}:00
+          </span>
+          , {workingDays}). נספר רק החלק של ההדפסה שנופל בשעות האלה, כך שהדפסות לילה
+          וסופי שבוע לא מכרסמות במכסה.
         </p>
       </Rule>
 
@@ -71,43 +122,24 @@ export default function RulesPage() {
           לעולם לא דוחקת עבודה אחרת, ולעולם לא דוחקת הדפסה שכבר התחילה.
         </p>
         <p className="mt-2">
-          כדי שהכפתור לא יישחק, הזמנה דחופה מחייבת נימוק בשורה אחת ומוגבלת ל־
-          {policy.maxUrgentPerWindow} בכל {policy.usageWindowDays} ימים.
+          אין מגבלה על כמות ההזמנות הדחופות — רק צריך לכתוב בשורה אחת למה זה דחוף, כדי
+          שמי שנדחק יבין מה קרה.
         </p>
       </Rule>
 
-      <Rule title="משתמשים כבדים מזמינים קרוב יותר ליום ההדפסה">
+      <Rule title="הזמנות פתוחות בו־זמנית">
         <p>
-          כמה זמן מראש אפשר להזמין תלוי בכמות ההדפסה שלכם ב־{policy.usageWindowDays}{' '}
-          הימים האחרונים:
-        </p>
-        <ul className="mt-3 space-y-1.5">
-          {(['new', 'regular', 'heavy'] as const).map((tier) => (
-            <li key={tier} className="flex flex-wrap gap-x-2 text-sm">
-              <span className="font-medium text-slate-900">{TIER_LABELS_HE[tier]}:</span>
-              <span className="text-slate-600">
-                עד {policy.tiers[tier].bookingHorizonDays} ימים מראש ·{' '}
-                {formatMinutesHe(policy.tiers[tier].weeklyMinutesCap)} בשבוע ·{' '}
-                {policy.tiers[tier].maxActiveReservations} הזמנות פתוחות ·{' '}
-                {policy.tiers[tier].primeTimeReservationsPerWeek} משבצות יום בשבוע
-              </span>
-            </li>
-          ))}
-        </ul>
-        <p className="mt-3">
-          הופכים למשתמש כבד מעבר ל־{formatMinutesHe(policy.heavyMinutesThreshold)} או{' '}
-          {policy.heavyReservationThreshold} הדפסות ב־{policy.usageWindowDays} ימים. האופק
-          הקצר יותר הוא בדיוק הנקודה: הוא משאיר את הצד הרחוק של הלוח פתוח למי שמדפיס
-          לעיתים רחוקות. חברים חדשים שומרים על האופק הארוך ביותר ב־
-          {policy.newUserAccountAgeDays} הימים הראשונים שלהם.
+          אפשר להחזיק עד {policy.maxActiveReservations} הזמנות עתידיות במקביל, כדי
+          שאי אפשר יהיה לתפוס מראש שורה ארוכה של משבצות. אין מגבלה על כמה רחוק קדימה
+          מזמינים — הלוח פתוח לכל תאריך עתידי.
         </p>
       </Rule>
 
       <Rule title={`משבצות פנויות נפתחות לכולם ${policy.openBookingHours} שעות מראש`}>
         <p>
           בתוך {policy.openBookingHours} שעות משעת ההתחלה כל המכסות מבוטלות. אם משבצת
-          עדיין ריקה, כל אחד יכול לקחת אותה ללא קשר לדרגה או למכסה השבועית — מדפסת
-          שעומדת בחוסר מעש לא עוזרת לאף אחד.
+          עדיין ריקה, כל אחד יכול לקחת אותה גם אם ניצל את המכסה השבועית או החודשית —
+          מדפסת שעומדת בחוסר מעש לא עוזרת לאף אחד.
         </p>
       </Rule>
 

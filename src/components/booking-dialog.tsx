@@ -24,7 +24,8 @@ interface BookingDialogProps {
 }
 
 const DURATION_CHOICES = [
-  30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720, 780, 840,
+  30, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720, 780, 840, 960,
+  1080, 1200, 1320, 1440,
 ];
 
 function timeOptions(granularity: number): string[] {
@@ -68,6 +69,7 @@ export function BookingDialog({
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [justification, setJustification] = useState('');
+  const [allowsJoiners, setAllowsJoiners] = useState(false);
 
   const [decision, setDecision] = useState<BookingDecision | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -84,6 +86,7 @@ export function BookingDialog({
     setStartTime(initial.startTime);
     setServerError(null);
     setDecision(null);
+    setAllowsJoiners(false);
   }, [open, initial.printerId, initial.dateKey, initial.startTime]);
 
   useEffect(() => {
@@ -118,8 +121,9 @@ export function BookingDialog({
       startsAt: range.start.toISOString(),
       endsAt: range.end.toISOString(),
       justification: justification.trim() || null,
+      allowsJoiners,
     };
-  }, [range, printerId, title, notes, priority, justification]);
+  }, [range, printerId, title, notes, priority, justification, allowsJoiners]);
 
   // Ask the server to run the full rule set as the member edits.
   useEffect(() => {
@@ -267,9 +271,7 @@ export function BookingDialog({
                 onChange={(event) => setDuration(Number(event.target.value))}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
               >
-                {DURATION_CHOICES.filter(
-                  (minutes) => minutes <= policy.maxOvernightMinutes,
-                ).map((minutes) => (
+                {DURATION_CHOICES.map((minutes) => (
                   <option key={minutes} value={minutes}>
                     {formatMinutes(minutes)}
                   </option>
@@ -300,6 +302,22 @@ export function BookingDialog({
               className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
             />
           </Field>
+
+          <label className="flex items-start gap-3 rounded-lg border border-slate-200 p-3">
+            <input
+              type="checkbox"
+              checked={allowsJoiners}
+              onChange={(event) => setAllowsJoiners(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300"
+            />
+            <span className="text-sm">
+              <span className="font-medium text-slate-900">Let others join me</span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                Other members can add their parts to this session. Joining costs them
+                nothing from their own weekly or monthly quota.
+              </span>
+            </span>
+          </label>
 
           {localClassification ? (
             <div className="flex flex-wrap gap-2 text-xs">

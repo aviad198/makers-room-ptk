@@ -101,6 +101,33 @@ export function zonedHour(date: Date, timeZone: string): number {
   return getZonedParts(date, timeZone).hour;
 }
 
+/** Local day of the week of `date`: 0 = Sunday ... 6 = Saturday. */
+export function zonedWeekday(date: Date, timeZone: string): number {
+  const { year, month, day } = getZonedParts(date, timeZone);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+/** Midnight at the start of the local calendar month containing `date`. */
+export function zonedStartOfMonth(date: Date, timeZone: string): Date {
+  const { year, month } = getZonedParts(date, timeZone);
+  return zonedWallTimeToDate(year, month, 1, 0, 0, timeZone);
+}
+
+/** Midnight at the start of the next local calendar month after `date`. */
+export function zonedStartOfNextMonth(date: Date, timeZone: string): Date {
+  const { year, month } = getZonedParts(date, timeZone);
+  return zonedWallTimeToDate(year, month + 1, 1, 0, 0, timeZone);
+}
+
+/**
+ * Midnight on the Sunday that opens the local calendar week containing `date`.
+ * The makerspace week runs Sunday -> Saturday, with Sun-Thu as working days.
+ */
+export function zonedStartOfWeek(date: Date, timeZone: string): Date {
+  const { year, month, day } = getZonedParts(date, timeZone);
+  return zonedWallTimeToDate(year, month, day - zonedWeekday(date, timeZone), 0, 0, timeZone);
+}
+
 export interface Interval {
   start: Date;
   end: Date;
@@ -186,6 +213,66 @@ export function startsInPrimeTime(
   return startHour <= endHour
     ? hour >= startHour && hour < endHour
     : hour >= startHour || hour < endHour;
+}
+
+/**
+ * True when the slot starts during working hours on a working day.
+ *
+ * Nights and weekends are deliberately outside this window: they are the cheap
+ * capacity the queue wants to push long jobs towards, so they do not count
+ * against the working-week quotas.
+ */
+export function startsInWorkingDaytime(
+  date: Date,
+  startHour: number,
+  endHour: number,
+  workingDays: readonly number[],
+  timeZone: string,
+): boolean {
+  return (
+    workingDays.includes(zonedWeekday(date, timeZone)) &&
+    startsInPrimeTime(date, startHour, endHour, timeZone)
+  );
+}
+
+/**
+ * How many minutes of `interval` fall inside working hours on a working day.
+ *
+ * Unlike `startsInWorkingDaytime` this measures overlap, so a print that spills
+ * out of the afternoon only spends its daytime portion of the monthly budget.
+ */
+export function workingDaytimeMinutes(
+  interval: Interval,
+  startHour: number,
+  endHour: number,
+  workingDays: readonly number[],
+  timeZone: string,
+): number {
+  const total = durationMinutes(interval);
+  if (total <= 0 || startHour >= endHour || workingDays.length === 0) return 0;
+
+  const first = getZonedParts(interval.start, timeZone);
+  const spanDays = Math.ceil(total / (60 * 24)) + 1;
+  let sum = 0;
+
+  for (let offset = -1; offset <= spanDays; offset += 1) {
+    const day = first.day + offset;
+    const windowStart = zonedWallTimeToDate(
+      first.year,
+      first.month,
+      day,
+      startHour,
+      0,
+      timeZone,
+    );
+    if (!workingDays.includes(zonedWeekday(windowStart, timeZone))) continue;
+    sum += overlapMinutes(interval, {
+      start: windowStart,
+      end: zonedWallTimeToDate(first.year, first.month, day, endHour, 0, timeZone),
+    });
+  }
+
+  return sum;
 }
 
 /** True when `date` sits on a `granularity`-minute boundary in local time. */

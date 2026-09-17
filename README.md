@@ -8,7 +8,7 @@ the machines stay busy and no single person can monopolise them.
 
 - **Stack:** Next.js 15 (App Router) · TypeScript · Tailwind v4 · Supabase (Postgres + Auth) · Vercel
 - **Auth:** Google OAuth via Supabase
-- **Tests:** Vitest — 67 unit tests covering the scheduling rules
+- **Tests:** Vitest — 75 unit tests covering the scheduling rules
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — forks and pull requests welcome
 - **Licence:** [MIT](LICENSE)
 
@@ -19,14 +19,18 @@ the machines stay busy and no single person can monopolise them.
 | Rule | Behaviour |
 | --- | --- |
 | **Two printers** | Each booking is tied to one machine. A database exclusion constraint makes double-booking impossible, even under a race. |
-| **Print length caps** | Daytime prints max 4h; overnight prints max 14h. |
-| **Long prints go overnight** | Anything over 4h must fall at least 70% inside the overnight window (17:00–08:00), keeping the daytime free for quick jobs. |
+| **5-minute cleaning gap** | Consecutive prints on a machine must leave a 5-minute gap: a print ending at 12:00 frees the machine from 12:05. Times are picked on a 5-minute grid, and the gap is enforced by the same exclusion constraint. |
+| **Join me** | A booking can be opened up so other members join the same session and print their parts alongside. Joining creates no reservation, so it costs the joiner nothing from their weekly or monthly quota. |
+| **No length cap** | A print may run as long as it needs, day or night. What is rationed is *working-hours* machine time, not the length of a job. |
+| **Long prints: a suggestion, not a rule** | Prints over 5h get a nudge to start in the overnight window (17:00–08:00). Nothing blocks a long daytime print, but night hours cost no quota, so moving it there keeps your working-week print free for something else. |
 | **Urgent work beats fun prints** | Bookings are `fun`, `standard` (work) or `urgent`. An urgent job takes over a slot held by a *fun* print, and the owner's email and phone are surfaced so they can be told. Urgent never bumps other work, and never bumps a print that has already started. |
-| **Urgent can't be abused** | Urgent bookings need a written reason and are capped at 2 per 28 days. |
-| **Heavy users can't hog the calendar** | Usage over the last 28 days sorts members into `new`, `regular` or `heavy`. The main lever is the **booking horizon**: heavy users may only book 5 days ahead, regular 14, new 21. The far side of the calendar therefore stays open for people who print less often. |
-| **Volume quotas** | Per tier: a rolling 7-day minutes cap, a limit on simultaneously held bookings, and a cap on daytime slots per week. |
+| **Urgent is unlimited** | There is no cap on urgent bookings. The only requirement is a one-line reason, so whoever gets bumped understands why. |
+| **One daytime print per working week** | Only one print may start during working hours (08:00–17:00, Sun–Thu) in any calendar week. Nights and weekends do not count, so long jobs are pushed to the cheap capacity. |
+| **10 working hours per month** | A member may spend at most 10h of working-hours machine time per calendar month. Only the part of a print that runs 08:00–17:00 on Sun–Thu is charged, so overnight and weekend prints are free. |
+| **Open bookings** | At most 5 upcoming bookings may be held at once, so nobody can claim a long row of slots in advance. There is no limit on how far ahead you may book. |
 | **Free slots open to everyone** | Within 24h of the start time every quota is waived — if a slot is still empty, anyone can take it. An idle printer helps nobody. |
 | **Contact details** | Every member has an email and a phone number on file, shown to signed-in members so a failed or bumped print can be chased up. |
+| **Email reminders** | Reservation owners and members who joined a print receive reminders 24 hours and 1 hour before it starts. |
 
 Every number above lives in `policy_settings` and can be tuned without a
 redeploy. The defaults are in
@@ -41,8 +45,7 @@ src/lib/scheduling/    Pure, dependency-free rules engine (fully unit tested)
   types.ts             Domain types
   time.ts              Timezone + overnight-window maths (DST safe)
   policy.ts            Default house rules
-  fairness.ts          Usage -> new / regular / heavy tier
-  usage.ts             Reservation history -> rolling-window aggregates
+  usage.ts             Reservation history -> working-week / monthly aggregates
   rules.ts             evaluateBooking() - the single source of truth
 
 src/lib/bookings/      Glue between the engine and the database
@@ -69,8 +72,14 @@ so what a member sees while picking a time is exactly what gets enforced.
 2. Open **SQL Editor** and run, in order:
    - `supabase/migrations/0001_init.sql`
    - `supabase/migrations/0002_book_reservation.sql`
+   - `supabase/migrations/0003_harden_security.sql`
+   - `supabase/migrations/0004_join_and_buffer.sql`
+   - `supabase/migrations/0005_print_reminders.sql`
+   - `supabase/migrations/0003_harden_security.sql`
+   - `supabase/migrations/0004_join_and_buffer.sql`
 
-   This creates the tables, row level security policies, the two printers, and
+   This creates the tables, row level security policies, the two printers, the
+   shared-session ("join me") table, the 5-minute cleaning gap constraint and
    the atomic `book_reservation` function.
 
 ### 2. Turn on Google sign-in
@@ -91,7 +100,7 @@ so what a member sees while picking a time is exactly what gets enforced.
 ### 3. Configure and run
 
 ```bash
-cp .env.example .env.local   # then fill in the three values
+cp .env.example .env.local   # then fill in the Supabase values
 npm install
 npm run dev
 ```
@@ -133,7 +142,7 @@ member's first booking.
 1. Push this repository to GitHub.
 2. In Vercel, **Add New → Project** and import the repo. The framework is
    detected automatically; no build settings need changing.
-3. Add the three environment variables from `.env.example` to
+3. Add the environment variables from `.env.example` to
    **Settings → Environment Variables** (Production, Preview and Development).
 
    > `SUPABASE_SERVICE_ROLE_KEY` must **not** have the `NEXT_PUBLIC_` prefix —
@@ -141,6 +150,21 @@ member's first booking.
 
 4. Deploy, then return to Supabase → **Authentication → URL Configuration** and
    add the live Vercel URL to **Site URL** and **Redirect URLs**.
+
+### Reminder email setup
+
+1. Create a [Resend](https://resend.com/) account, verify the sending domain,
+   and create an API key.
+2. Set `RESEND_API_KEY` and `PRINT_REMINDER_FROM` in Vercel.
+3. Generate a long random `CRON_SECRET` and set it in Vercel. Vercel includes
+   it automatically in the authorization header when invoking cron routes.
+4. Apply `supabase/migrations/0005_print_reminders.sql` before the next deploy.
+
+Vercel invokes `/api/cron/print-reminders` every five minutes. The endpoint
+claims due reminders in Supabase before sending them, records failures for
+retry, and uses a stable Resend idempotency key to prevent duplicate mail.
+The five-minute schedule requires a Vercel plan that supports sub-daily cron
+jobs.
 
 Anyone with the link can reach the app, but they must sign in with Google to see
 or book anything. `/rules` is readable without an account.

@@ -1,10 +1,12 @@
-import { durationMinutes, startsInPrimeTime } from './time';
-import type {
-  PrintPriority,
-  ReservationStatus,
-  SchedulingPolicy,
-  UserUsage,
-} from './types';
+import {
+  startsInWorkingDaytime,
+  workingDaytimeMinutes,
+  zonedStartOfMonth,
+  zonedStartOfNextMonth,
+  zonedStartOfWeek,
+} from './time';
+
+import type { ReservationStatus, SchedulingPolicy, UserUsage } from './types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -14,9 +16,7 @@ export interface UsageReservation {
   id: string;
   startsAt: Date;
   endsAt: Date;
-  priority: PrintPriority;
   status: ReservationStatus;
-  createdAt: Date;
 }
 
 /** Statuses that count towards a member's usage. */
@@ -30,60 +30,63 @@ function counts(reservation: UsageReservation): boolean {
   return COUNTED_STATUSES.has(reservation.status);
 }
 
-function reservationMinutes(reservation: UsageReservation): number {
-  return durationMinutes({ start: reservation.startsAt, end: reservation.endsAt });
-}
-
 /**
- * Largest total of booked minutes across any rolling 7-day window that would
- * contain `slotStart`.
- *
- * Checking every candidate window (rather than just the preceding 7 days)
- * means a member cannot dodge the weekly cap by booking out of order.
+ * Daytime prints the member already holds in the Sun-Saturday calendar week
+ * containing `slotStart`. Nights and weekends are excluded, so only prints
+ * starting in working hours on a working day are counted.
  */
-function worstCaseWeek(
+function workingWeekReservations(
   reservations: UsageReservation[],
   slotStart: Date,
   policy: SchedulingPolicy,
-): { minutes: number; primeTime: number } {
-  const anchors = [
-    slotStart.getTime() - WEEK_MS,
-    slotStart.getTime(),
-    ...reservations.map((r) => r.startsAt.getTime()),
-    ...reservations.map((r) => r.startsAt.getTime() - WEEK_MS),
-  ];
+): number {
+  const weekStart = zonedStartOfWeek(slotStart, policy.timeZone).getTime();
+  const weekEnd = weekStart + WEEK_MS;
 
-  let minutes = 0;
-  let primeTime = 0;
+  return reservations.filter((reservation) => {
+    const start = reservation.startsAt.getTime();
+    if (start < weekStart || start >= weekEnd) return false;
+    return startsInWorkingDaytime(
+      reservation.startsAt,
+      policy.primeTimeStartHour,
+      policy.primeTimeEndHour,
+      policy.workingDays,
+      policy.timeZone,
+    );
+  }).length;
+}
 
-  for (const anchor of anchors) {
-    const windowEnd = anchor + WEEK_MS;
-    // Only windows that would also hold the new booking are relevant.
-    if (slotStart.getTime() < anchor || slotStart.getTime() >= windowEnd) continue;
+/**
+ * Working-hours minutes the member has already booked inside the calendar
+ * month containing `slotStart`. Only the daytime-on-a-working-day portion of
+ * each print is charged to the monthly budget.
+ */
+function monthWorkingMinutes(
+  reservations: UsageReservation[],
+  slotStart: Date,
+  policy: SchedulingPolicy,
+): number {
+  const monthStart = zonedStartOfMonth(slotStart, policy.timeZone);
+  const monthEnd = zonedStartOfNextMonth(slotStart, policy.timeZone);
 
-    let windowMinutes = 0;
-    let windowPrime = 0;
-    for (const reservation of reservations) {
-      const start = reservation.startsAt.getTime();
-      if (start < anchor || start >= windowEnd) continue;
-      windowMinutes += reservationMinutes(reservation);
-      if (
-        startsInPrimeTime(
-          reservation.startsAt,
-          policy.primeTimeStartHour,
-          policy.primeTimeEndHour,
-          policy.timeZone,
-        )
-      ) {
-        windowPrime += 1;
-      }
-    }
+  return reservations.reduce((sum, reservation) => {
+    // Clip to the month so a print spanning the boundary only spends the
+    // budget of the month it actually runs in.
+    const start = new Date(Math.max(reservation.startsAt.getTime(), monthStart.getTime()));
+    const end = new Date(Math.min(reservation.endsAt.getTime(), monthEnd.getTime()));
+    if (end.getTime() <= start.getTime()) return sum;
 
-    minutes = Math.max(minutes, windowMinutes);
-    primeTime = Math.max(primeTime, windowPrime);
-  }
-
-  return { minutes, primeTime };
+    return (
+      sum +
+      workingDaytimeMinutes(
+        { start, end },
+        policy.primeTimeStartHour,
+        policy.primeTimeEndHour,
+        policy.workingDays,
+        policy.timeZone,
+      )
+    );
+  }, 0);
 }
 
 /**
@@ -93,7 +96,6 @@ function worstCaseWeek(
 export function computeUsage(
   reservations: UsageReservation[],
   options: {
-    accountCreatedAt: Date;
     now: Date;
     slotStart: Date;
     policy: SchedulingPolicy;
@@ -101,31 +103,19 @@ export function computeUsage(
     excludeReservationId?: string | null;
   },
 ): UserUsage {
-  const { accountCreatedAt, now, slotStart, policy, excludeReservationId } = options;
+  const { now, slotStart, policy, excludeReservationId } = options;
 
   const relevant = reservations.filter(
     (r) => counts(r) && r.id !== excludeReservationId,
   );
 
-  const windowStart = now.getTime() - policy.usageWindowDays * DAY_MS;
-  const inWindow = relevant.filter((r) => r.startsAt.getTime() >= windowStart);
-
-  const week = worstCaseWeek(relevant, slotStart, policy);
-
   return {
-    accountCreatedAt,
-    lifetimeReservations: relevant.length,
-    windowReservations: inWindow.length,
-    windowMinutes: inWindow.reduce((sum, r) => sum + reservationMinutes(r), 0),
     activeReservations: relevant.filter(
       (r) =>
         (r.status === 'scheduled' || r.status === 'in_progress') &&
         r.endsAt.getTime() > now.getTime(),
     ).length,
-    weekMinutes: week.minutes,
-    weekPrimeTimeReservations: week.primeTime,
-    urgentInWindow: relevant.filter(
-      (r) => r.priority === 'urgent' && r.createdAt.getTime() >= windowStart,
-    ).length,
+    workingWeekReservations: workingWeekReservations(relevant, slotStart, policy),
+    monthWorkingMinutes: monthWorkingMinutes(relevant, slotStart, policy),
   };
 }

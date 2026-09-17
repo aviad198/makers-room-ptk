@@ -103,6 +103,7 @@ export type Database = {
           justification: string | null;
           preempted_by: string | null;
           preempted_at: string | null;
+          allows_joiners: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -119,6 +120,7 @@ export type Database = {
           justification?: string | null;
           preempted_by?: string | null;
           preempted_at?: string | null;
+          allows_joiners?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -135,6 +137,7 @@ export type Database = {
           justification?: string | null;
           preempted_by?: string | null;
           preempted_at?: string | null;
+          allows_joiners?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -158,6 +161,39 @@ export type Database = {
             columns: ['preempted_by'];
             isOneToOne: false;
             referencedRelation: 'reservations';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      reservation_participants: {
+        Row: {
+          reservation_id: string;
+          user_id: string;
+          created_at: string;
+        };
+        Insert: {
+          reservation_id: string;
+          user_id: string;
+          created_at?: string;
+        };
+        Update: {
+          reservation_id?: string;
+          user_id?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'reservation_participants_reservation_id_fkey';
+            columns: ['reservation_id'];
+            isOneToOne: false;
+            referencedRelation: 'reservations';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'reservation_participants_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
             referencedColumns: ['id'];
           },
         ];
@@ -198,6 +234,60 @@ export type Database = {
           {
             foreignKeyName: 'reservation_events_actor_id_fkey';
             columns: ['actor_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      print_reminder_deliveries: {
+        Row: {
+          reservation_id: string;
+          user_id: string;
+          reminder_type: '24h' | '1h';
+          status: 'sending' | 'sent' | 'failed';
+          attempts: number;
+          claimed_at: string;
+          sent_at: string | null;
+          last_error: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          reservation_id: string;
+          user_id: string;
+          reminder_type: '24h' | '1h';
+          status?: 'sending' | 'sent' | 'failed';
+          attempts?: number;
+          claimed_at?: string;
+          sent_at?: string | null;
+          last_error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          reservation_id?: string;
+          user_id?: string;
+          reminder_type?: '24h' | '1h';
+          status?: 'sending' | 'sent' | 'failed';
+          attempts?: number;
+          claimed_at?: string;
+          sent_at?: string | null;
+          last_error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'print_reminder_deliveries_reservation_id_fkey';
+            columns: ['reservation_id'];
+            isOneToOne: false;
+            referencedRelation: 'reservations';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'print_reminder_deliveries_user_id_fkey';
+            columns: ['user_id'];
             isOneToOne: false;
             referencedRelation: 'profiles';
             referencedColumns: ['id'];
@@ -249,8 +339,26 @@ export type Database = {
           p_ends_at: string;
           p_justification: string | null;
           p_preempt_ids: string[];
+          p_allows_joiners: boolean;
         };
         Returns: Database['public']['Tables']['reservations']['Row'];
+      };
+      claim_print_reminders: {
+        Args: {
+          p_now?: string;
+          p_limit?: number;
+        };
+        Returns: {
+          reservation_id: string;
+          user_id: string;
+          reminder_type: '24h' | '1h';
+          email: string;
+          full_name: string | null;
+          title: string;
+          printer_name: string;
+          starts_at: string;
+          ends_at: string;
+        }[];
       };
     };
     Enums: {
@@ -270,12 +378,23 @@ export type ProfileRow = PublicSchema['Tables']['profiles']['Row'];
 export type PrinterRow = PublicSchema['Tables']['printers']['Row'];
 export type ReservationRow = PublicSchema['Tables']['reservations']['Row'];
 export type ReservationEventRow = PublicSchema['Tables']['reservation_events']['Row'];
+export type ReservationParticipantRow =
+  PublicSchema['Tables']['reservation_participants']['Row'];
+export type PrintReminderDeliveryRow =
+  PublicSchema['Tables']['print_reminder_deliveries']['Row'];
 export type PolicySettingsRow = PublicSchema['Tables']['policy_settings']['Row'];
 
-/** A reservation joined with the member who booked it. */
+type ParticipantProfile = Pick<ProfileRow, 'id' | 'full_name' | 'email' | 'phone'>;
+
+/** A reservation joined with the member who booked it and anyone who joined. */
 export type ReservationWithProfile = ReservationRow & {
   profile: Pick<
     ProfileRow,
     'id' | 'full_name' | 'email' | 'phone' | 'avatar_url' | 'color_index'
   > | null;
+  participants?: {
+    user_id: string;
+    created_at: string;
+    profile: ParticipantProfile | null;
+  }[];
 };

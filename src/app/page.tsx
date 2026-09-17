@@ -32,6 +32,13 @@ function toCalendarReservation(row: ReservationWithProfile): CalendarReservation
     ownerEmail: row.profile?.email ?? null,
     ownerPhone: row.profile?.phone ?? null,
     colorIndex: row.profile?.color_index ?? 0,
+    allowsJoiners: row.allows_joiners,
+    participants: (row.participants ?? []).map((participant) => ({
+      userId: participant.user_id,
+      name: participant.profile?.full_name || participant.profile?.email || 'Member',
+      email: participant.profile?.email ?? null,
+      phone: participant.profile?.phone ?? null,
+    })),
   };
 }
 
@@ -57,7 +64,7 @@ export default async function SchedulePage({
   const weekStart = weekDays[0];
   const weekEnd = new Date(weekDays[6].getTime() + 24 * 60 * 60 * 1000);
 
-  const history = usageHistoryRange(policy);
+  const history = usageHistoryRange();
 
   const [printers, reservations, myReservations] = await Promise.all([
     loadPrinters(supabase),
@@ -85,7 +92,7 @@ export default async function SchedulePage({
           <h1 className="text-xl font-semibold text-slate-900">
             {formatRangeLabel(weekDays, policy.timeZone)}
           </h1>
-          <p className="text-sm text-slate-500">{viewer.tierExplanation}</p>
+          <p className="text-sm text-slate-500">{viewer.quotaExplanation}</p>
         </div>
 
         {printers.length === 0 ? (

@@ -16,6 +16,7 @@ export const bookingInputSchema = z
     startsAt: z.string().datetime({ offset: true }),
     endsAt: z.string().datetime({ offset: true }),
     justification: z.string().trim().max(500).optional().nullable(),
+    allowsJoiners: z.boolean().optional(),
     reservationId: z.string().uuid().optional().nullable(),
   })
   .refine((value) => new Date(value.endsAt) > new Date(value.startsAt), {
@@ -45,15 +46,16 @@ export type ProfileInput = z.infer<typeof profileInputSchema>;
 /** Policy overrides an admin may save. Every field is optional. */
 export const policyInputSchema = z
   .object({
-    maxDaytimeMinutes: z.number().int().min(30).max(24 * 60),
-    maxOvernightMinutes: z.number().int().min(30).max(48 * 60),
     longPrintThresholdMinutes: z.number().int().min(30).max(24 * 60),
     overnightStartHour: z.number().int().min(0).max(23),
     overnightEndHour: z.number().int().min(0).max(23),
     openBookingHours: z.number().int().min(1).max(168),
-    heavyMinutesThreshold: z.number().int().min(60),
-    heavyReservationThreshold: z.number().int().min(1),
-    maxUrgentPerWindow: z.number().int().min(0).max(20),
+    bufferMinutes: z.number().int().min(0).max(120),
+    slotGranularityMinutes: z.number().int().min(1).max(60),
+    maxPrintsPerWorkingWeek: z.number().int().min(0).max(20),
+    monthlyWorkingMinutesCap: z.number().int().min(0).max(200 * 60),
+    maxActiveReservations: z.number().int().min(1).max(50),
+    workingDays: z.array(z.number().int().min(0).max(6)).max(7),
   })
   .partial();
 

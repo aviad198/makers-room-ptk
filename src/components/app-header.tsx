@@ -1,7 +1,5 @@
 import Link from 'next/link';
 
-import { TIER_LABELS } from '@/lib/scheduling';
-
 import type { ViewerSummary } from './calendar-types';
 
 export function AppHeader({
@@ -42,10 +40,10 @@ export function AppHeader({
 
         <div className="ml-auto flex items-center gap-3">
           <span
-            title={viewer.tierExplanation}
+            title={viewer.quotaExplanation}
             className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 sm:inline"
           >
-            {TIER_LABELS[viewer.tier]}
+            {viewer.monthlyBudgetLabel}
           </span>
           <Link
             href="/onboarding"

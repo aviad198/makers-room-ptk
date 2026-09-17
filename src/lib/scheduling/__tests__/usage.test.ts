@@ -14,14 +14,12 @@ function res(overrides: Partial<UsageReservation> & { id: string }): UsageReserv
   return {
     startsAt: at(4, 10),
     endsAt: at(4, 13),
-    priority: 'fun',
     status: 'scheduled',
-    createdAt: at(1, 10),
     ...overrides,
   };
 }
 
-const base = { accountCreatedAt: at(-200, 12), now: NOW, policy: DEFAULT_POLICY };
+const base = { now: NOW, policy: DEFAULT_POLICY };
 
 describe('computeUsage', () => {
   it('ignores cancelled and preempted reservations', () => {
@@ -33,7 +31,7 @@ describe('computeUsage', () => {
       ],
       { ...base, slotStart: at(4, 14) },
     );
-    expect(usage.lifetimeReservations).toBe(1);
+    expect(usage.workingWeekReservations).toBe(1);
   });
 
   it('counts only upcoming reservations as active', () => {
@@ -45,7 +43,6 @@ describe('computeUsage', () => {
       { ...base, slotStart: at(5, 10) },
     );
     expect(usage.activeReservations).toBe(1);
-    expect(usage.lifetimeReservations).toBe(2);
   });
 
   it('excludes the reservation being edited', () => {
@@ -54,60 +51,58 @@ describe('computeUsage', () => {
       slotStart: at(4, 10),
       excludeReservationId: 'editing',
     });
-    expect(usage.lifetimeReservations).toBe(0);
-    expect(usage.weekMinutes).toBe(0);
+    expect(usage.activeReservations).toBe(0);
+    expect(usage.workingWeekReservations).toBe(0);
+    expect(usage.monthWorkingMinutes).toBe(0);
   });
 
-  it('sums booked minutes inside the rolling week', () => {
+  // March 2026 opens on a Sunday: day 4 is a Wednesday, day 6 a Friday and
+  // day 8 the Sunday that starts the following week.
+  it('counts only daytime working-day prints in the working week', () => {
     const usage = computeUsage(
       [
-        res({ id: 'a', startsAt: at(3, 10), endsAt: at(3, 13) }), // 180m
-        res({ id: 'b', startsAt: at(5, 10), endsAt: at(5, 12) }), // 120m
+        res({ id: 'workday', startsAt: at(4, 10), endsAt: at(4, 13) }),
+        res({ id: 'night', startsAt: at(3, 20), endsAt: at(4, 6) }),
+        res({ id: 'friday', startsAt: at(6, 10), endsAt: at(6, 13) }),
       ],
-      { ...base, slotStart: at(4, 10) },
+      { ...base, slotStart: at(5, 10) },
     );
-    expect(usage.weekMinutes).toBe(300);
+    expect(usage.workingWeekReservations).toBe(1);
   });
 
-  it('catches bookings made out of order', () => {
-    // Booking day 9 last must still see days 4 and 6 in the same 7-day span.
+  it('starts a fresh working week on Sunday', () => {
     const usage = computeUsage(
-      [
-        res({ id: 'a', startsAt: at(4, 10), endsAt: at(4, 14) }), // 240m
-        res({ id: 'b', startsAt: at(6, 10), endsAt: at(6, 14) }), // 240m
-      ],
+      [res({ id: 'lastweek', startsAt: at(4, 10), endsAt: at(4, 13) })],
       { ...base, slotStart: at(9, 10) },
     );
-    expect(usage.weekMinutes).toBe(480);
+    expect(usage.workingWeekReservations).toBe(0);
   });
 
-  it('drops reservations outside every relevant week window', () => {
-    const usage = computeUsage(
-      [res({ id: 'a', startsAt: at(4, 10), endsAt: at(4, 14) })],
-      { ...base, slotStart: at(20, 10) },
-    );
-    expect(usage.weekMinutes).toBe(0);
-  });
-
-  it('counts prime-time reservations separately from overnight ones', () => {
+  it('charges only working-hours minutes to the monthly budget', () => {
     const usage = computeUsage(
       [
-        res({ id: 'day', startsAt: at(3, 10), endsAt: at(3, 13) }),
-        res({ id: 'night', startsAt: at(5, 20), endsAt: at(6, 6) }),
+        // 15:00 -> 08:00 contributes its 15:00-17:00 daytime portion only.
+        res({ id: 'evening', startsAt: at(4, 15), endsAt: at(5, 8) }),
+        res({ id: 'weekend', startsAt: at(7, 9), endsAt: at(7, 15) }),
+        res({ id: 'daytime', startsAt: at(9, 9), endsAt: at(9, 12) }),
       ],
-      { ...base, slotStart: at(4, 10) },
+      { ...base, slotStart: at(10, 10) },
     );
-    expect(usage.weekPrimeTimeReservations).toBe(1);
+    expect(usage.monthWorkingMinutes).toBe(120 + 180);
   });
 
-  it('counts urgent bookings by when they were created', () => {
+  it('keeps the monthly budget inside the calendar month', () => {
     const usage = computeUsage(
       [
-        res({ id: 'recent', priority: 'urgent', createdAt: at(1, 10) }),
-        res({ id: 'old', priority: 'urgent', createdAt: at(-60, 10) }),
+        res({
+          id: 'february',
+          startsAt: zonedWallTimeToDate(2026, 2, 25, 9, 0, TZ),
+          endsAt: zonedWallTimeToDate(2026, 2, 25, 12, 0, TZ),
+        }),
+        res({ id: 'march', startsAt: at(4, 9), endsAt: at(4, 12) }),
       ],
-      { ...base, slotStart: at(4, 10) },
+      { ...base, slotStart: at(10, 10) },
     );
-    expect(usage.urgentInWindow).toBe(1);
+    expect(usage.monthWorkingMinutes).toBe(180);
   });
 });

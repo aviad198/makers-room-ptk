@@ -10,15 +10,15 @@ import type { SchedulingPolicy } from './types';
 export const DEFAULT_POLICY: SchedulingPolicy = {
   timeZone: 'Asia/Jerusalem',
 
-  slotGranularityMinutes: 15,
+  slotGranularityMinutes: 5,
   minReservationMinutes: 30,
+  // Time to clear the bed and set up: a print ending at 12:00 leaves the
+  // machine free from 12:05.
+  bufferMinutes: 5,
 
-  // A daytime print must finish inside a working afternoon.
-  maxDaytimeMinutes: 4 * 60,
-  // Overnight the machine can run long unattended jobs.
-  maxOvernightMinutes: 14 * 60,
-  // Anything longer than a daytime slot has to move overnight.
-  longPrintThresholdMinutes: 4 * 60,
+  // Prints are never capped for length. Past this we suggest running overnight,
+  // which is also free of the daytime quotas.
+  longPrintThresholdMinutes: 5 * 60,
 
   overnightStartHour: 17,
   overnightEndHour: 8,
@@ -27,41 +27,14 @@ export const DEFAULT_POLICY: SchedulingPolicy = {
   primeTimeStartHour: 8,
   primeTimeEndHour: 17,
 
+  // Sunday .. Thursday. Friday, Saturday and every night are free capacity.
+  workingDays: [0, 1, 2, 3, 4],
+  maxPrintsPerWorkingWeek: 1,
+  monthlyWorkingMinutesCap: 10 * 60,
+  maxActiveReservations: 5,
+
   openBookingHours: 24,
 
-  usageWindowDays: 28,
-  heavyMinutesThreshold: 30 * 60,
-  heavyReservationThreshold: 10,
-  newUserAccountAgeDays: 30,
-  newUserReservationThreshold: 3,
-
-  /**
-   * The booking horizon is the main fairness lever: heavy users may only book
-   * a few days out, so the far side of the calendar stays open for members who
-   * print less often.
-   */
-  tiers: {
-    new: {
-      bookingHorizonDays: 21,
-      weeklyMinutesCap: 25 * 60,
-      maxActiveReservations: 5,
-      primeTimeReservationsPerWeek: 4,
-    },
-    regular: {
-      bookingHorizonDays: 14,
-      weeklyMinutesCap: 20 * 60,
-      maxActiveReservations: 4,
-      primeTimeReservationsPerWeek: 3,
-    },
-    heavy: {
-      bookingHorizonDays: 5,
-      weeklyMinutesCap: 15 * 60,
-      maxActiveReservations: 2,
-      primeTimeReservationsPerWeek: 2,
-    },
-  },
-
-  maxUrgentPerWindow: 2,
   urgentRequiresJustification: true,
 
   // Urgent work jobs bump hobby prints, never other work.
@@ -79,19 +52,12 @@ export const PRIORITY_LABELS: Record<string, string> = {
   fun: 'Fun',
 };
 
-export const TIER_LABELS: Record<string, string> = {
-  new: 'New member',
-  regular: 'Regular',
-  heavy: 'Heavy user',
-};
-
 /** Merge a partial policy (e.g. from the DB) over the defaults. */
 export function resolvePolicy(overrides?: Partial<SchedulingPolicy> | null): SchedulingPolicy {
   if (!overrides) return DEFAULT_POLICY;
   return {
     ...DEFAULT_POLICY,
     ...overrides,
-    tiers: { ...DEFAULT_POLICY.tiers, ...(overrides.tiers ?? {}) },
     preemptibleBy: { ...DEFAULT_POLICY.preemptibleBy, ...(overrides.preemptibleBy ?? {}) },
   };
 }

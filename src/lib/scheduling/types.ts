@@ -15,24 +15,6 @@ export type ReservationStatus =
   | 'cancelled'
   | 'preempted';
 
-/**
- * Fairness bucket a member falls into, derived from recent usage.
- * Heavy users get a shorter booking horizon so that they cannot claim
- * every future slot before lighter users get a chance.
- */
-export type FairnessTier = 'new' | 'regular' | 'heavy';
-
-export interface TierLimits {
-  /** How many days into the future this tier may book. */
-  bookingHorizonDays: number;
-  /** Cap on total booked minutes within any rolling 7-day span. */
-  weeklyMinutesCap: number;
-  /** Cap on simultaneously held future reservations. */
-  maxActiveReservations: number;
-  /** Cap on daytime ("prime time") reservations per rolling 7 days. */
-  primeTimeReservationsPerWeek: number;
-}
-
 export interface SchedulingPolicy {
   /** IANA timezone the physical makerspace lives in. */
   timeZone: string;
@@ -40,12 +22,13 @@ export interface SchedulingPolicy {
   /** Bookings must align to this many minutes. */
   slotGranularityMinutes: number;
   minReservationMinutes: number;
+  /** Gap that must be left between two prints on a machine, for cleaning. */
+  bufferMinutes: number;
 
-  /** A print that is not substantially overnight may not exceed this. */
-  maxDaytimeMinutes: number;
-  /** A print that qualifies as overnight may not exceed this. */
-  maxOvernightMinutes: number;
-  /** Prints longer than this must be scheduled overnight. */
+  /**
+   * Prints longer than this are suggested (never forced) to run overnight.
+   * There is no cap on how long a print may be.
+   */
   longPrintThresholdMinutes: number;
 
   /** Overnight window, e.g. 19:00 -> 08:00 local time. */
@@ -54,27 +37,30 @@ export interface SchedulingPolicy {
   /** Fraction of a print that must fall inside the overnight window. */
   overnightCoverageRatio: number;
 
-  /** Prime time (daytime) window used for the prime-time fairness cap. */
+  /** Prime time (daytime) window used for the working-hours quotas. */
   primeTimeStartHour: number;
   primeTimeEndHour: number;
 
   /**
+   * Local days that count as working days (0 = Sunday .. 6 = Saturday).
+   * Only prints that run during working hours on these days count towards the
+   * working-week and monthly caps; nights and weekends are free capacity.
+   */
+  workingDays: number[];
+  /** Max daytime prints a member may hold in one Sun-Thu working week. */
+  maxPrintsPerWorkingWeek: number;
+  /** Cap on daytime working-hours minutes within a calendar month. */
+  monthlyWorkingMinutesCap: number;
+  /** Cap on simultaneously held future reservations. */
+  maxActiveReservations: number;
+
+  /**
    * Inside this many hours before start, any free slot is open to anyone:
-   * horizon and quota limits are waived so slots never go to waste.
+   * quota limits are waived so slots never go to waste.
    */
   openBookingHours: number;
 
-  /** Rolling window used to classify a member's usage. */
-  usageWindowDays: number;
-  heavyMinutesThreshold: number;
-  heavyReservationThreshold: number;
-  newUserAccountAgeDays: number;
-  newUserReservationThreshold: number;
-
-  tiers: Record<FairnessTier, TierLimits>;
-
-  /** Guard rails so "urgent" cannot be abused. */
-  maxUrgentPerWindow: number;
+  /** Urgent work is unlimited, but must say why. */
   urgentRequiresJustification: boolean;
 
   /** Which priorities each priority is allowed to bump. */
@@ -96,21 +82,12 @@ export interface ExistingReservation {
 
 /** Aggregated usage for the member making the request. */
 export interface UserUsage {
-  accountCreatedAt: Date;
-  /** Reservations ever made that were not cancelled. */
-  lifetimeReservations: number;
-  /** Reservations starting within the rolling usage window. */
-  windowReservations: number;
-  /** Booked minutes within the rolling usage window. */
-  windowMinutes: number;
   /** Currently held reservations that have not finished yet. */
   activeReservations: number;
-  /** Booked minutes in the rolling 7 days around the requested slot. */
-  weekMinutes: number;
-  /** Prime-time reservations in the rolling 7 days around the slot. */
-  weekPrimeTimeReservations: number;
-  /** Urgent reservations created inside the usage window. */
-  urgentInWindow: number;
+  /** Daytime prints already held in the Sun-Thu week containing the slot. */
+  workingWeekReservations: number;
+  /** Daytime working-hours minutes used in the calendar month of the slot. */
+  monthWorkingMinutes: number;
 }
 
 export interface MemberProfile {
@@ -130,6 +107,8 @@ export interface BookingRequest {
   startsAt: Date;
   endsAt: Date;
   justification?: string | null;
+  /** Owner is happy for other members to join this print session. */
+  allowsJoiners?: boolean;
   /** Set when editing an existing booking so it does not conflict with itself. */
   reservationId?: string | null;
 }
@@ -158,6 +137,10 @@ export interface SlotClassification {
   isOvernight: boolean;
   isLongPrint: boolean;
   isPrimeTime: boolean;
+  /** Minutes of the slot that fall in working hours on a working day. */
+  workingDaytimeMinutes: number;
+  /** True when the slot starts in working hours on a working day. */
+  isWorkingDaytime: boolean;
   /** Hours from `now` until the slot starts. */
   leadTimeHours: number;
   /** True when the slot is inside the open (free-for-all) window. */
@@ -166,7 +149,6 @@ export interface SlotClassification {
 
 export interface BookingDecision {
   allowed: boolean;
-  tier: FairnessTier;
   classification: SlotClassification;
   violations: RuleViolation[];
   warnings: RuleViolation[];

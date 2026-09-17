@@ -245,6 +245,13 @@ export function WeekCalendar({
                         <span className="block text-[0.6rem] font-semibold uppercase opacity-80">
                           {printerNames.get(reservation.printerId) ?? ''}
                           {reservation.priority === 'urgent' ? ' · urgent' : ''}
+                          {reservation.allowsJoiners
+                            ? ` · 👥${
+                                reservation.participants.length > 0
+                                  ? ` ${reservation.participants.length}`
+                                  : ''
+                              }`
+                            : ''}
                         </span>
                         <span className="block truncate text-[0.7rem] font-semibold leading-tight">
                           {segment.isStart ? reservation.title : `↳ ${reservation.title}`}
@@ -271,6 +278,10 @@ export function WeekCalendar({
           timeZone={policy.timeZone}
           onClose={() => setSelected(null)}
           onCancelled={() => {
+            setSelected(null);
+            router.refresh();
+          }}
+          onChanged={() => {
             setSelected(null);
             router.refresh();
           }}
@@ -344,16 +355,20 @@ function Legend({ policy }: { policy: SchedulingPolicy }) {
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-500">
       <span className="flex items-center gap-1.5">
         <span className="h-3 w-3 rounded bg-indigo-50 ring-1 ring-indigo-200" />
-        Overnight {policy.overnightStartHour}:00–{policy.overnightEndHour}:00 · up to{' '}
-        {formatMinutes(policy.maxOvernightMinutes)}
+        Overnight {policy.overnightStartHour}:00–{policy.overnightEndHour}:00 · best for
+        prints over {formatMinutes(policy.longPrintThresholdMinutes)}
       </span>
       <span className="flex items-center gap-1.5">
         <span className="h-3 w-3 rounded bg-white ring-1 ring-slate-300" />
-        Daytime · up to {formatMinutes(policy.maxDaytimeMinutes)}
+        Working hours · counts towards your quota
       </span>
       <span className="flex items-center gap-1.5">
         <span className="h-3 w-3 rounded ring-2 ring-slate-900" />
         Your prints
+      </span>
+      <span>👥 Open session — anyone may join.</span>
+      <span>
+        {policy.bufferMinutes} min gap between prints for clearing the bed.
       </span>
       <span>Each member has their own colour.</span>
     </div>
@@ -367,6 +382,7 @@ function ReservationSheet({
   timeZone,
   onClose,
   onCancelled,
+  onChanged,
 }: {
   reservation: CalendarReservation;
   printerName: string;
@@ -374,14 +390,25 @@ function ReservationSheet({
   timeZone: string;
   onClose: () => void;
   onCancelled: () => void;
+  onChanged: () => void;
 }) {
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const canCancel =
     reservation.status === 'scheduled' &&
     (reservation.userId === viewer.id || viewer.role === 'admin');
   const style = PRIORITY_STYLES[reservation.priority];
+
+  const hasJoined = reservation.participants.some(
+    (participant) => participant.userId === viewer.id,
+  );
+  const canJoin =
+    reservation.allowsJoiners &&
+    reservation.userId !== viewer.id &&
+    (reservation.status === 'scheduled' || reservation.status === 'in_progress') &&
+    new Date(reservation.endsAt).getTime() > Date.now();
 
   async function cancel() {
     setIsCancelling(true);
@@ -398,6 +425,26 @@ function ReservationSheet({
       onCancelled();
     } finally {
       setIsCancelling(false);
+    }
+  }
+
+  async function toggleJoin() {
+    setIsJoining(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/reservations/${reservation.id}/join`, {
+        method: hasJoined ? 'DELETE' : 'POST',
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError(
+          body.error ?? (hasJoined ? 'Could not leave.' : 'Could not join that session.'),
+        );
+        return;
+      }
+      onChanged();
+    } finally {
+      setIsJoining(false);
     }
   }
 
@@ -424,6 +471,13 @@ function ReservationSheet({
           </span>
         </div>
 
+        {reservation.allowsJoiners ? (
+          <p className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">
+            👥 Open session — other members may join this print. Joining does not use
+            any of your own quota.
+          </p>
+        ) : null}
+
         <dl className="mt-4 space-y-2 text-sm">
           <Row label="Booked by" value={reservation.ownerName} />
           {reservation.ownerEmail ? (
@@ -447,6 +501,12 @@ function ReservationSheet({
             />
           ) : null}
           {reservation.notes ? <Row label="Notes" value={reservation.notes} /> : null}
+          {reservation.participants.length > 0 ? (
+            <Row
+              label="Joined"
+              value={reservation.participants.map((p) => p.name).join(', ')}
+            />
+          ) : null}
         </dl>
 
         {error ? (
@@ -456,6 +516,26 @@ function ReservationSheet({
         ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
+          {canJoin ? (
+            <button
+              type="button"
+              onClick={toggleJoin}
+              disabled={isJoining}
+              className={`rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50 ${
+                hasJoined
+                  ? 'border border-slate-300 text-slate-600 hover:bg-slate-50'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700'
+              }`}
+            >
+              {isJoining
+                ? hasJoined
+                  ? 'Leaving…'
+                  : 'Joining…'
+                : hasJoined
+                  ? 'Leave session'
+                  : 'Join this print'}
+            </button>
+          ) : null}
           {canCancel ? (
             <button
               type="button"
