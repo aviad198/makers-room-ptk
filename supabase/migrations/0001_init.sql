@@ -1,9 +1,15 @@
 -- MakersRoom PTK - 3D printer queue
 -- Initial schema: members, printers, reservations, policy and audit trail.
 
-create extension if not exists "pgcrypto";
--- Needed for the exclusion constraint that blocks double-booked slots.
-create extension if not exists "btree_gist";
+-- Keep extensions out of the public schema (database-linter 0014).
+create schema if not exists extensions;
+create extension if not exists "pgcrypto" with schema extensions;
+-- Backs the exclusion constraint that blocks double-booked slots.
+create extension if not exists "btree_gist" with schema extensions;
+
+-- btree_gist's operator classes must be resolvable while the exclusion
+-- constraint further down is created.
+set search_path = public, extensions;
 
 -- ---------------------------------------------------------------------------
 -- Enums
@@ -120,6 +126,8 @@ insert into public.policy_settings (id, policy) values (true, '{}'::jsonb);
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
+-- Pinned so a caller's search_path cannot influence the function.
+set search_path = ''
 as $$
 begin
   new.updated_at = now();
@@ -168,6 +176,11 @@ $$;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- SECURITY DEFINER functions in `public` are exposed by PostgREST at
+-- /rest/v1/rpc/<name>. Only the trigger above should invoke this one, and the
+-- trigger runs as the table owner, so these revokes do not affect it.
+revoke all on function public.handle_new_user() from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Row level security
