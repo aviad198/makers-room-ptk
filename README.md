@@ -103,6 +103,27 @@ update public.profiles set role = 'admin' where email = 'you@example.com';
 
 ---
 
+## Access and moderation
+
+Sign-up is deliberately **open**: anyone who reaches the URL and has a Google
+account can join and book. For a small makerspace that beats maintaining an
+invite list, and it matches how the room already works.
+
+The lever for abuse is reactive rather than preventative. To suspend someone:
+
+```sql
+update public.profiles set is_blocked = true where email = 'them@example.com';
+```
+
+A blocked member can still sign in and read the calendar, but every booking is
+refused with a clear message. Reverse it by setting the flag back to `false`.
+
+If the workshop outgrows this, the natural next steps are restricting sign-in to
+one email domain, or adding an `approved` flag that an admin flips before a
+member's first booking.
+
+---
+
 ## Deploying to Vercel
 
 1. Push this repository to GitHub.
