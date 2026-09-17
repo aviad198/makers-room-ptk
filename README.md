@@ -4,9 +4,12 @@ A booking app for the workshop's two 3D printers. Members sign in with Google,
 pick a slot on a shared weekly calendar, and the app enforces the house rules so
 the machines stay busy and no single person can monopolise them.
 
+**Live: https://makers-room-ptk.vercel.app**
+
 - **Stack:** Next.js 15 (App Router) · TypeScript · Tailwind v4 · Supabase (Postgres + Auth) · Vercel
 - **Auth:** Google OAuth via Supabase
 - **Tests:** Vitest — 67 unit tests covering the scheduling rules
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) — forks and pull requests welcome
 
 ---
 
@@ -140,6 +143,30 @@ member's first booking.
 
 Anyone with the link can reach the app, but they must sign in with Google to see
 or book anything. `/rules` is readable without an account.
+
+---
+
+## Contributing
+
+Contributions are welcome — fork the repo, create a branch, and open a pull
+request. Full guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Worth knowing before you start: **the scheduling rules can be worked on with no
+setup at all.** The engine in `src/lib/scheduling/` is pure TypeScript with no
+database or React dependency, so `npm install && npm test` is the entire loop
+for any change to booking behaviour.
+
+```bash
+git clone https://github.com/<your-username>/makers-room-ptk.git
+cd makers-room-ptk
+npm install
+npm test          # no database or config needed
+npm run verify    # typecheck + lint + tests, run this before pushing
+```
+
+Running the full app additionally needs your own free Supabase project — see
+[Local setup](#local-setup) above. Please don't point development at the live
+makerspace database.
 
 ---
 
