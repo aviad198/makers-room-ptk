@@ -20,7 +20,7 @@ the machines stay busy and no single person can monopolise them.
 | --- | --- |
 | **Two printers** | Each booking is tied to one machine. A database exclusion constraint makes double-booking impossible, even under a race. |
 | **Print length caps** | Daytime prints max 4h; overnight prints max 14h. |
-| **Long prints go overnight** | Anything over 4h must fall at least 70% inside the overnight window (19:00–08:00), keeping the daytime free for quick jobs. |
+| **Long prints go overnight** | Anything over 4h must fall at least 70% inside the overnight window (17:00–08:00), keeping the daytime free for quick jobs. |
 | **Urgent work beats fun prints** | Bookings are `fun`, `standard` (work) or `urgent`. An urgent job takes over a slot held by a *fun* print, and the owner's email and phone are surfaced so they can be told. Urgent never bumps other work, and never bumps a print that has already started. |
 | **Urgent can't be abused** | Urgent bookings need a written reason and are capped at 2 per 28 days. |
 | **Heavy users can't hog the calendar** | Usage over the last 28 days sorts members into `new`, `regular` or `heavy`. The main lever is the **booking horizon**: heavy users may only book 5 days ahead, regular 14, new 21. The far side of the calendar therefore stays open for people who print less often. |

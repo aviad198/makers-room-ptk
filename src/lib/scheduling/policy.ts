@@ -20,12 +20,12 @@ export const DEFAULT_POLICY: SchedulingPolicy = {
   // Anything longer than a daytime slot has to move overnight.
   longPrintThresholdMinutes: 4 * 60,
 
-  overnightStartHour: 19,
+  overnightStartHour: 17,
   overnightEndHour: 8,
   overnightCoverageRatio: 0.7,
 
   primeTimeStartHour: 8,
-  primeTimeEndHour: 19,
+  primeTimeEndHour: 17,
 
   openBookingHours: 24,
 
